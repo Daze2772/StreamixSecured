@@ -40,19 +40,33 @@ const STATUS = { UNTESTED: 'untested', LOADING: 'loading', OK: 'ok', FAILED: 'fa
 const LOAD_TIMEOUT_MS = 8000;
 
 // Sandbox applied to the OUTER iframe (which loads our /embed proxy page).
-// Flags propagate to the nested provider iframe — blocking popups, top-nav
-// and target=_blank — without the provider being able to detect or read it.
-//   ✓ allow-scripts            → provider's player JS runs
-//   ✓ allow-same-origin        → provider's localStorage / session cookies
-//   ✓ allow-forms              → in-player search / quality selectors
-//   ✓ allow-presentation       → Picture-in-Picture & fullscreen API
-//   ✓ allow-modals             → some players use confirm() / alert() legit.
-//   ✗ allow-popups             → window.open() ad spawns BLOCKED
-//   ✗ allow-popups-to-escape-sandbox → any sneaky popup stays sandboxed
-//   ✗ allow-top-navigation     → top.location ad redirects BLOCKED
-//   ✗ allow-top-navigation-by-user-activation → ad-overlay click hijacks BLOCKED
+// Flags propagate to the nested provider iframe per HTML5 spec.
+//
+// IMPORTANT trade-off: we include `allow-popups` to defeat provider sandbox
+// detection (providers probe `window.open()` on load — if it returns null,
+// they refuse to play with a "disable sandbox" message). With allow-popups,
+// window.open succeeds, providers play happily, but popup tabs CAN spawn.
+//
+// The popups that do spawn are themselves sandboxed (we omit
+// `allow-popups-to-escape-sandbox`) so they inherit all our restrictions —
+// they can't open further popups, can't redirect the top window, and most
+// ad tracking scripts inside them silently fail. So while popups are not
+// fully eliminated, they're heavily neutered.
+//
+// What IS fully blocked:
+//   ✗ allow-top-navigation                       → top.location ad redirects (tab hijack)
+//   ✗ allow-top-navigation-by-user-activation    → ad-overlay click hijack
+//   ✗ allow-popups-to-escape-sandbox             → popup ad chains
+//
+// What's allowed (required for playback):
+//   ✓ allow-scripts        → provider's player JS runs
+//   ✓ allow-same-origin    → provider's cookies / localStorage / session
+//   ✓ allow-forms          → in-player search / quality selector
+//   ✓ allow-presentation   → Picture-in-Picture & fullscreen API
+//   ✓ allow-modals         → confirm() / alert() used by some players
+//   ✓ allow-popups         → defeats sandbox-detection probe
 const POPUP_BLOCK_SANDBOX =
-  'allow-scripts allow-same-origin allow-forms allow-presentation allow-modals';
+  'allow-scripts allow-same-origin allow-forms allow-presentation allow-modals allow-popups';
 
 const VideoPlayer = ({
   mediaType,
@@ -345,11 +359,11 @@ const VideoPlayer = ({
                       popupBlock ? 'text-emerald-400' : 'text-yellow-400'
                     }`}
                     title={popupBlock
-                      ? 'Popup blocker is active. Provider popups, redirects and target=_blank are blocked.'
-                      : 'Popup blocker is OFF. Provider popups and redirects can occur.'}
+                      ? 'Tab-hijack protection ON. Provider cannot redirect your tab or open further popups from popups. Some popup ads may still spawn but are heavily restricted.'
+                      : 'Tab-hijack protection OFF. Provider can fully redirect your tab and spawn unrestricted popups.'}
                   >
                     {popupBlock ? <Shield className="w-3 h-3" /> : <ShieldOff className="w-3 h-3" />}
-                    {popupBlock ? 'popups blocked' : 'popups allowed'}
+                    {popupBlock ? 'redirects blocked' : 'unprotected'}
                   </span>
                 )}
               </div>
@@ -359,8 +373,8 @@ const VideoPlayer = ({
                   <button
                     onClick={() => { setPopupBlock((v) => !v); setIframeKey((k) => k + 1); }}
                     title={popupBlock
-                      ? 'Disable popup blocker (use if a provider refuses to play)'
-                      : 'Enable popup blocker (blocks provider popups & redirects)'}
+                      ? 'Tab-hijack protection is ON. Disable only if this provider refuses to play (rare with current config).'
+                      : 'Enable tab-hijack protection (blocks the provider from redirecting your tab and limits popups).'}
                     className={`inline-flex items-center gap-1.5 px-3 py-2 rounded-md border text-sm transition ${
                       popupBlock
                         ? 'bg-emerald-500/10 hover:bg-emerald-500/20 border-emerald-500/30 text-emerald-300'
@@ -368,7 +382,7 @@ const VideoPlayer = ({
                     }`}
                   >
                     {popupBlock ? <Shield className="w-4 h-4" /> : <ShieldOff className="w-4 h-4" />}
-                    <span className="hidden sm:inline">{popupBlock ? 'Blocker: ON' : 'Blocker: OFF'}</span>
+                    <span className="hidden sm:inline">{popupBlock ? 'Protection: ON' : 'Protection: OFF'}</span>
                   </button>
                 )}
                 <button
