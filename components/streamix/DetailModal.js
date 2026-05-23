@@ -44,10 +44,10 @@ const DetailModal = ({ open, onOpenChange, item, onCardClick }) => {
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="max-w-5xl p-0 bg-neutral-950 border-neutral-800 text-white overflow-hidden max-h-[92vh] overflow-y-auto">
+      <DialogContent className="max-w-4xl p-0 bg-neutral-950 border-neutral-800 text-white overflow-hidden max-h-[92vh] overflow-y-auto">
         <div className="relative">
-          {/* Backdrop / Trailer (embedded, click-to-play) */}
-          <div className="relative aspect-video w-full bg-black overflow-hidden">
+          {/* Backdrop / Trailer (compact, click-to-play) */}
+          <div className="relative w-full bg-black overflow-hidden" style={{ height: 'min(45vh, 420px)' }}>
             {trailer ? (
               <iframe
                 key={trailer.key}
@@ -65,37 +65,37 @@ const DetailModal = ({ open, onOpenChange, item, onCardClick }) => {
                 <Film className="w-20 h-20" />
               </div>
             )}
-            {/* Subtle bottom gradient only when no trailer (so YouTube controls stay clear) */}
             {!trailer && (
-              <div className="absolute inset-0 bg-gradient-to-t from-neutral-950 via-neutral-950/40 to-transparent pointer-events-none" />
+              <>
+                <div className="absolute inset-0 bg-gradient-to-t from-neutral-950 via-neutral-950/40 to-transparent pointer-events-none" />
+                <div className="absolute bottom-0 left-0 right-0 p-5 md:p-8">
+                  <h2 className="text-2xl md:text-4xl font-black drop-shadow-lg">{title}</h2>
+                </div>
+              </>
             )}
             <button
               onClick={() => onOpenChange(false)}
-              className="absolute top-3 right-3 h-9 w-9 rounded-full bg-black/70 hover:bg-black grid place-items-center border border-white/10 z-20"
+              className="absolute top-3 right-3 h-9 w-9 rounded-full bg-black/80 hover:bg-black grid place-items-center border border-white/10 z-20"
               aria-label="Close"
             >
               <X className="w-5 h-5" />
             </button>
-            {!trailer && (
-              <div className="absolute bottom-0 left-0 right-0 p-5 md:p-8">
-                <h2 className="text-2xl md:text-4xl font-black drop-shadow-lg">{title}</h2>
-              </div>
-            )}
           </div>
 
-          {/* Title + Action Buttons (below player so they don't cover YouTube controls) */}
-          <div className="px-5 md:px-8 pt-5">
+          {/* Title + Action row (always visible immediately below player) */}
+          <div className="px-5 md:px-8 pt-4 pb-2">
             {trailer && (
-              <h2 className="text-2xl md:text-4xl font-black mb-3">{title}</h2>
+              <h2 className="text-xl md:text-3xl font-black mb-3">{title}</h2>
             )}
-            <div className="flex flex-wrap items-center gap-3">
+            <div className="flex flex-wrap items-center gap-2 md:gap-3">
               <Button
+                size="lg"
                 onClick={() => { onOpenChange(false); router.push(`/watch/${mediaType}/${item.id}`); }}
-                className="bg-white text-black hover:bg-white/90 font-bold"
+                className="bg-white text-black hover:bg-white/90 font-bold h-10 md:h-11 px-5"
               >
                 <Play className="w-4 h-4 mr-2 fill-black" /> Play
               </Button>
-              <Button variant="secondary" className="bg-white/15 hover:bg-white/25 border border-white/10">
+              <Button size="lg" variant="secondary" className="bg-white/15 hover:bg-white/25 border border-white/10 h-10 md:h-11">
                 <Plus className="w-4 h-4 mr-2" /> My List
               </Button>
             </div>
