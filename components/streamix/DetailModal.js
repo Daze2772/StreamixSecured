@@ -1,9 +1,9 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { Dialog, DialogContent } from '@/components/ui/dialog';
-import { tmdb, backdrop, img } from '@/lib/tmdb';
-import { Play, Plus, Star, X, Calendar, Clock, Film } from 'lucide-react';
+import { tmdb, backdrop, img, pickTrailer } from '@/lib/tmdb';
+import { Play, Plus, Star, X, Calendar, Clock, Film, Youtube } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { useRouter } from 'next/navigation';
 import MovieCard from './MovieCard';
@@ -11,23 +11,25 @@ import MovieCard from './MovieCard';
 const DetailModal = ({ open, onOpenChange, item, onCardClick }) => {
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(false);
-  const [showTrailer, setShowTrailer] = useState(false);
+  const [playTrailer, setPlayTrailer] = useState(false);
   const router = useRouter();
 
   useEffect(() => {
     if (!open || !item) {
-      setShowTrailer(false);
+      setPlayTrailer(false);
       return;
     }
     const mediaType = item.media_type || (item.first_air_date ? 'tv' : 'movie');
     setLoading(true);
     setData(null);
-    setShowTrailer(false);
+    setPlayTrailer(false);
     tmdb.details(mediaType, item.id).then((d) => {
       setData(d ? { ...d, _media_type: mediaType } : null);
       setLoading(false);
     });
   }, [open, item]);
+
+  const trailer = useMemo(() => pickTrailer(data?.videos?.results), [data]);
 
   if (!item) return null;
 
@@ -40,17 +42,30 @@ const DetailModal = ({ open, onOpenChange, item, onCardClick }) => {
   const cast = data?.credits?.cast?.slice(0, 8) || [];
   const similar = data?.similar?.results?.slice(0, 12) || [];
   const mediaType = data?._media_type || item.media_type || 'movie';
-  const trailer = data?.videos?.results?.find((v) => v.type === 'Trailer' && v.site === 'YouTube');
+
+  const goToWatch = () => {
+    onOpenChange(false);
+    router.push(`/watch/${mediaType}/${item.id}`);
+  };
 
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="max-w-4xl p-0 bg-neutral-950 border-neutral-800 text-white overflow-hidden max-h-[92vh] overflow-y-auto">
         <div className="relative">
-          {/* Backdrop / Trailer (compact, click-to-play) */}
+          {/* Compact player area */}
           <div className="relative w-full bg-black overflow-hidden" style={{ height: 'min(45vh, 420px)' }}>
-            {trailer ? (
+            {playTrailer && trailer ? (
               <iframe
-                key={trailer.key}
+                key={`autoplay-${trailer.key}`}
+                src={`https://www.youtube.com/embed/${trailer.key}?autoplay=1&controls=1&rel=0&modestbranding=1`}
+                className="absolute inset-0 w-full h-full"
+                allow="autoplay; encrypted-media; fullscreen"
+                allowFullScreen
+                title={`${title} trailer`}
+              />
+            ) : trailer ? (
+              <iframe
+                key={`embed-${trailer.key}`}
                 src={`https://www.youtube.com/embed/${trailer.key}?autoplay=0&controls=1&rel=0&modestbranding=1`}
                 className="absolute inset-0 w-full h-full"
                 allow="encrypted-media; fullscreen"
@@ -82,20 +97,26 @@ const DetailModal = ({ open, onOpenChange, item, onCardClick }) => {
             </button>
           </div>
 
-          {/* Title + Action row (always visible immediately below player) */}
+          {/* Title + Actions */}
           <div className="px-5 md:px-8 pt-4 pb-2">
-            {trailer && (
-              <h2 className="text-xl md:text-3xl font-black mb-3">{title}</h2>
-            )}
+            {trailer && <h2 className="text-xl md:text-3xl font-black mb-3">{title}</h2>}
             <div className="flex flex-wrap items-center gap-2 md:gap-3">
               <Button
-                size="lg"
-                onClick={() => { onOpenChange(false); router.push(`/watch/${mediaType}/${item.id}`); }}
-                className="bg-white text-black hover:bg-white/90 font-bold h-10 md:h-11 px-5"
+                onClick={goToWatch}
+                className="bg-red-600 hover:bg-red-700 text-white font-bold h-11 px-6 shadow-lg shadow-red-600/30"
               >
-                <Play className="w-4 h-4 mr-2 fill-black" /> Play
+                <Play className="w-5 h-5 mr-2 fill-white" /> Play Now
               </Button>
-              <Button size="lg" variant="secondary" className="bg-white/15 hover:bg-white/25 border border-white/10 h-10 md:h-11">
+              {trailer && (
+                <Button
+                  variant="secondary"
+                  onClick={() => setPlayTrailer(true)}
+                  className="bg-white/15 hover:bg-white/25 border border-white/10 h-11"
+                >
+                  <Youtube className="w-4 h-4 mr-2" /> Watch Trailer
+                </Button>
+              )}
+              <Button variant="secondary" className="bg-white/15 hover:bg-white/25 border border-white/10 h-11">
                 <Plus className="w-4 h-4 mr-2" /> My List
               </Button>
             </div>
