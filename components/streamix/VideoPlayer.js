@@ -5,7 +5,7 @@ import { STREAMING_SERVERS, getEmbedUrl } from '@/lib/streaming';
 import { backdrop } from '@/lib/tmdb';
 import {
   Server, AlertCircle, RotateCw, ExternalLink, Loader2, CheckCircle2, XCircle, Circle, Youtube,
-  ChevronRight, ShieldAlert,
+  ChevronRight, ShieldAlert, Play,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 
@@ -54,6 +54,9 @@ const VideoPlayer = ({
   const [iframeKey, setIframeKey] = useState(0);
   const [showTrailer, setShowTrailer] = useState(false);
   const [toast, setToast] = useState(null);
+  // Lazy-load: don't mount the heavy streaming iframe until the user explicitly clicks Play.
+  // This prevents ad-laden streaming sites from eating 500MB+ of RAM on page load.
+  const [playerActive, setPlayerActive] = useState(false);
 
   const timerRef = useRef(null);
 
@@ -69,9 +72,9 @@ const VideoPlayer = ({
     });
   }, []);
 
-  // Start "loading" status + timeout when server changes
+  // Start "loading" status + timeout when server changes — only AFTER the user clicks play
   useEffect(() => {
-    if (showTrailer) return;
+    if (showTrailer || !playerActive) return;
     setToast(null);
     if (activeServer.isDirect) {
       updateStatus(serverIdx, STATUS.OK);
@@ -80,7 +83,6 @@ const VideoPlayer = ({
     updateStatus(serverIdx, STATUS.LOADING);
     if (timerRef.current) clearTimeout(timerRef.current);
     timerRef.current = setTimeout(() => {
-      // If still loading after timeout, surface a toast suggesting next
       setStatuses((prev) => {
         if (prev[serverIdx] === STATUS.LOADING) {
           const next = prev.slice();
@@ -94,7 +96,6 @@ const VideoPlayer = ({
         msg: `${activeServer.name} took too long. Trying next server…`,
         action: 'next',
       });
-      // Auto-advance to next untested/ok server after another short delay
       setTimeout(() => {
         const nextIdx = findNextCandidate(serverIdx);
         if (nextIdx != null) setServerIdx(nextIdx);
@@ -102,7 +103,7 @@ const VideoPlayer = ({
     }, LOAD_TIMEOUT_MS);
     return () => clearTimeout(timerRef.current);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [serverIdx, iframeKey, season, episode, showTrailer]);
+  }, [serverIdx, iframeKey, season, episode, showTrailer, playerActive]);
 
   // Persist last selected server
   useEffect(() => {
@@ -154,7 +155,39 @@ const VideoPlayer = ({
       <div className="relative w-full bg-black">
         <div className="relative w-full mx-auto bg-black" style={{ maxWidth: '1400px' }}>
           <div className="relative w-full aspect-video bg-black">
-            {showTrailer && trailerKey ? (
+            {/* Lazy play overlay — iframe only mounts after user clicks Play.
+                Saves hundreds of MB of RAM from streaming-site ad scripts. */}
+            {!playerActive && !showTrailer && (
+              <button
+                onClick={() => setPlayerActive(true)}
+                className="absolute inset-0 w-full h-full group"
+                aria-label="Play"
+              >
+                {poster ? (
+                  // eslint-disable-next-line @next/next/no-img-element
+                  <img src={poster} alt="" className="absolute inset-0 w-full h-full object-cover" />
+                ) : (
+                  <div className="absolute inset-0 bg-neutral-900" />
+                )}
+                <div className="absolute inset-0 bg-gradient-to-t from-black/90 via-black/40 to-black/40" />
+                <div className="absolute inset-0 grid place-items-center">
+                  <div className="flex flex-col items-center gap-3 transition-transform group-hover:scale-105">
+                    <div className="h-20 w-20 md:h-24 md:w-24 rounded-full bg-red-600 hover:bg-red-700 grid place-items-center shadow-2xl shadow-red-600/40 ring-4 ring-white/10">
+                      <Play className="w-10 h-10 md:w-12 md:h-12 fill-white text-white ml-1" />
+                    </div>
+                    <span className="text-sm font-semibold text-white/90 tracking-wide">
+                      Click to start playback
+                    </span>
+                    <span className="text-[11px] text-neutral-300 max-w-md text-center px-4">
+                      Streaming on <b className="text-white">{activeServer.name}</b>
+                      {mediaType === 'tv' && <> · S{season} · E{episode}</>}
+                    </span>
+                  </div>
+                </div>
+              </button>
+            )}
+
+            {playerActive && showTrailer && trailerKey ? (
               <iframe
                 key={`trailer-${trailerKey}`}
                 src={`https://www.youtube.com/embed/${trailerKey}?autoplay=1&rel=0&modestbranding=1`}
@@ -163,7 +196,7 @@ const VideoPlayer = ({
                 allowFullScreen
                 title="Trailer"
               />
-            ) : activeServer.isDirect ? (
+            ) : playerActive && activeServer.isDirect ? (
               <video
                 key={`direct-${iframeKey}`}
                 src={activeServer.src}
@@ -174,7 +207,7 @@ const VideoPlayer = ({
                 className="w-full h-full object-contain bg-black"
                 onCanPlay={() => updateStatus(serverIdx, STATUS.OK)}
               />
-            ) : embedUrl ? (
+            ) : playerActive && embedUrl ? (
               <iframe
                 key={`${activeServer.id}-${season}-${episode}-${iframeKey}`}
                 src={embedUrl}
@@ -189,7 +222,7 @@ const VideoPlayer = ({
                 onError={handleIframeError}
                 title={`${activeServer.name} player`}
               />
-            ) : (
+            ) : playerActive ? (
               <div className="absolute inset-0 grid place-items-center text-center p-6">
                 <div>
                   <AlertCircle className="w-10 h-10 mx-auto mb-3 text-red-500" />
@@ -197,10 +230,10 @@ const VideoPlayer = ({
                   <p className="text-sm text-neutral-400 mt-1">Try another server below.</p>
                 </div>
               </div>
-            )}
+            ) : null}
 
             {/* Loading overlay (during the iframe boot window) */}
-            {!showTrailer && !activeServer.isDirect && statuses[serverIdx] === STATUS.LOADING && (
+            {playerActive && !showTrailer && !activeServer.isDirect && statuses[serverIdx] === STATUS.LOADING && (
               <div className="absolute inset-x-0 bottom-0 p-3 bg-gradient-to-t from-black/90 to-transparent pointer-events-none">
                 <div className="flex items-center gap-2 text-xs text-neutral-200">
                   <Loader2 className="w-3.5 h-3.5 animate-spin" />

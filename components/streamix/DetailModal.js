@@ -52,7 +52,7 @@ const DetailModal = ({ open, onOpenChange, item, onCardClick }) => {
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="max-w-4xl p-0 bg-neutral-950 border-neutral-800 text-white overflow-hidden max-h-[92vh] overflow-y-auto">
         <div className="relative">
-          {/* Compact player area */}
+          {/* Compact backdrop area (trailer is lazy-loaded on click — saves browser RAM) */}
           <div className="relative w-full bg-black overflow-hidden" style={{ height: 'min(45vh, 420px)' }}>
             {playTrailer && trailer ? (
               <iframe
@@ -63,27 +63,29 @@ const DetailModal = ({ open, onOpenChange, item, onCardClick }) => {
                 allowFullScreen
                 title={`${title} trailer`}
               />
-            ) : trailer ? (
-              <iframe
-                key={`embed-${trailer.key}`}
-                src={`https://www.youtube.com/embed/${trailer.key}?autoplay=0&controls=1&rel=0&modestbranding=1`}
-                className="absolute inset-0 w-full h-full"
-                allow="encrypted-media; fullscreen"
-                allowFullScreen
-                title={`${title} trailer`}
-              />
-            ) : bg ? (
-              // eslint-disable-next-line @next/next/no-img-element
-              <img src={bg} alt={title} className="absolute inset-0 w-full h-full object-cover" />
             ) : (
-              <div className="absolute inset-0 grid place-items-center text-neutral-700">
-                <Film className="w-20 h-20" />
-              </div>
-            )}
-            {!trailer && (
               <>
+                {bg ? (
+                  // eslint-disable-next-line @next/next/no-img-element
+                  <img src={bg} alt={title} className="absolute inset-0 w-full h-full object-cover" />
+                ) : (
+                  <div className="absolute inset-0 grid place-items-center text-neutral-700">
+                    <Film className="w-20 h-20" />
+                  </div>
+                )}
                 <div className="absolute inset-0 bg-gradient-to-t from-neutral-950 via-neutral-950/40 to-transparent pointer-events-none" />
-                <div className="absolute bottom-0 left-0 right-0 p-5 md:p-8">
+                {trailer && (
+                  <button
+                    onClick={() => setPlayTrailer(true)}
+                    className="absolute inset-0 grid place-items-center group"
+                    aria-label="Play trailer"
+                  >
+                    <div className="h-16 w-16 md:h-20 md:w-20 rounded-full bg-white/10 backdrop-blur-md border border-white/20 grid place-items-center transition group-hover:bg-white group-hover:scale-110">
+                      <Play className="w-7 h-7 md:w-9 md:h-9 fill-white text-white group-hover:fill-black group-hover:text-black ml-1" />
+                    </div>
+                  </button>
+                )}
+                <div className="absolute bottom-0 left-0 right-0 p-5 md:p-8 pointer-events-none">
                   <h2 className="text-2xl md:text-4xl font-black drop-shadow-lg">{title}</h2>
                 </div>
               </>
@@ -99,7 +101,6 @@ const DetailModal = ({ open, onOpenChange, item, onCardClick }) => {
 
           {/* Title + Actions */}
           <div className="px-5 md:px-8 pt-4 pb-2">
-            {trailer && <h2 className="text-xl md:text-3xl font-black mb-3">{title}</h2>}
             <div className="flex flex-wrap items-center gap-2 md:gap-3">
               <Button
                 onClick={goToWatch}
@@ -107,7 +108,7 @@ const DetailModal = ({ open, onOpenChange, item, onCardClick }) => {
               >
                 <Play className="w-5 h-5 mr-2 fill-white" /> Play Now
               </Button>
-              {trailer && (
+              {trailer && !playTrailer && (
                 <Button
                   variant="secondary"
                   onClick={() => setPlayTrailer(true)}
