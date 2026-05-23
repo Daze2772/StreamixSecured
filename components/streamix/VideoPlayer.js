@@ -4,29 +4,55 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { STREAMING_SERVERS, getEmbedUrl } from '@/lib/streaming';
 import {
   Server, AlertCircle, RotateCw, Loader2,
-  CheckCircle2, XCircle, Circle, Youtube, ChevronRight, Play, Info,
+  CheckCircle2, XCircle, Circle, Youtube, ChevronRight, Play, Shield, ShieldOff,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 
 /**
  * VideoPlayer — reliability-first multi-server player for movies & TV.
  *
- * Sandbox strategy: NONE.
- *   Every embed provider we tested actively rejects iframe `sandbox` and
- *   refuses to play with a "Please disable sandbox" message. We therefore
- *   omit sandbox entirely. Popup-ad mitigation is delegated to the user's
- *   browser ad-blocker (uBlock Origin recommended — surfaced in the UI).
+ * Popup-blocker strategy: DOUBLE-IFRAME SANDBOX PROXY.
+ *
+ *   Main page  →  <iframe sandbox="..."> /embed?url=PROVIDER </iframe>  →  <iframe src=PROVIDER>
+ *                  (outer sandbox enforced)                                  (no sandbox attr)
+ *
+ *   - Provider's own anti-sandbox check (`window.frameElement.hasAttribute('sandbox')`)
+ *     looks at the INNER iframe element, which has no sandbox attr → it plays.
+ *   - HTML5 spec: sandbox flags propagate from OUTER iframe into ALL nested
+ *     browsing contexts, so window.open / target="_blank" / top.location
+ *     hijacks from inside the provider are blocked by the browser.
+ *   - The provider cannot read the outer iframe's sandbox attribute due to
+ *     the cross-origin barrier between our page and the provider's window.
+ *
+ *   The user can toggle the blocker off (per-title persisted) if a specific
+ *   provider still misbehaves. Your own ads/UI on the main page are NOT
+ *   affected — the sandbox only applies inside the player iframe.
  *
  * UX:
  *   - Lazy mount: shows a big Play overlay until user clicks (saves RAM)
  *   - 8-second load timeout → auto-marks server failed → shows toast → auto-switches
  *   - Per-server status: green ✓ / red ✗ / yellow ⟳ / empty ○
  *   - Reload player button to retry current server
- *   - localStorage remembers last working server per title
+ *   - localStorage remembers last working server + popup-blocker preference
  */
 
 const STATUS = { UNTESTED: 'untested', LOADING: 'loading', OK: 'ok', FAILED: 'failed' };
 const LOAD_TIMEOUT_MS = 8000;
+
+// Sandbox applied to the OUTER iframe (which loads our /embed proxy page).
+// Flags propagate to the nested provider iframe — blocking popups, top-nav
+// and target=_blank — without the provider being able to detect or read it.
+//   ✓ allow-scripts            → provider's player JS runs
+//   ✓ allow-same-origin        → provider's localStorage / session cookies
+//   ✓ allow-forms              → in-player search / quality selectors
+//   ✓ allow-presentation       → Picture-in-Picture & fullscreen API
+//   ✓ allow-modals             → some players use confirm() / alert() legit.
+//   ✗ allow-popups             → window.open() ad spawns BLOCKED
+//   ✗ allow-popups-to-escape-sandbox → any sneaky popup stays sandboxed
+//   ✗ allow-top-navigation     → top.location ad redirects BLOCKED
+//   ✗ allow-top-navigation-by-user-activation → ad-overlay click hijacks BLOCKED
+const POPUP_BLOCK_SANDBOX =
+  'allow-scripts allow-same-origin allow-forms allow-presentation allow-modals';
 
 const VideoPlayer = ({
   mediaType,
@@ -41,11 +67,18 @@ const VideoPlayer = ({
     () => `streamix:server:${mediaType}:${tmdbId}`,
     [mediaType, tmdbId],
   );
+  const blockerKey = 'streamix:popupBlocker';
 
   const initialIdx = (() => {
     if (typeof window === 'undefined') return 0;
     const v = parseInt(window.localStorage.getItem(persistKey) || '0', 10);
     return Number.isFinite(v) && v >= 0 && v < STREAMING_SERVERS.length ? v : 0;
+  })();
+
+  const initialBlock = (() => {
+    if (typeof window === 'undefined') return true;
+    const v = window.localStorage.getItem(blockerKey);
+    return v === null ? true : v === '1';
   })();
 
   const [serverIdx, setServerIdx] = useState(initialIdx);
@@ -54,6 +87,7 @@ const VideoPlayer = ({
   const [showTrailer, setShowTrailer] = useState(false);
   const [toast, setToast] = useState(null);
   const [playerActive, setPlayerActive] = useState(false);
+  const [popupBlock, setPopupBlock] = useState(initialBlock);
 
   const timerRef = useRef(null);
   const triedAutoSwitchRef = useRef(new Set()); // prevents infinite auto-switch loop
@@ -128,6 +162,11 @@ const VideoPlayer = ({
   useEffect(() => {
     try { window.localStorage.setItem(persistKey, String(serverIdx)); } catch (_) {}
   }, [serverIdx, persistKey]);
+
+  // Persist popup-blocker preference
+  useEffect(() => {
+    try { window.localStorage.setItem(blockerKey, popupBlock ? '1' : '0'); } catch (_) {}
+  }, [popupBlock]);
 
   const handleIframeLoad = () => {
     if (timerRef.current) clearTimeout(timerRef.current);
@@ -240,12 +279,13 @@ const VideoPlayer = ({
 
             {playerActive && !showTrailer && !activeServer.isDirect && embedUrl && (
               <iframe
-                key={`${activeServer.id}-${season}-${episode}-${iframeKey}`}
-                src={embedUrl}
+                key={`${activeServer.id}-${season}-${episode}-${iframeKey}-${popupBlock ? 'pb' : 'np'}`}
+                src={popupBlock ? `/embed?url=${encodeURIComponent(embedUrl)}` : embedUrl}
                 className="absolute inset-0 w-full h-full"
                 allow="autoplay; encrypted-media; fullscreen; picture-in-picture"
                 allowFullScreen
                 referrerPolicy="no-referrer"
+                {...(popupBlock ? { sandbox: POPUP_BLOCK_SANDBOX } : {})}
                 onLoad={handleIframeLoad}
                 onError={handleIframeError}
                 title={`${activeServer.name} player`}
@@ -299,9 +339,38 @@ const VideoPlayer = ({
                 <span>
                   Playing on <b className="text-white">{activeServer.name}</b>
                 </span>
+                {!activeServer.isDirect && (
+                  <span
+                    className={`inline-flex items-center gap-1 ml-2 text-[10px] uppercase tracking-wider ${
+                      popupBlock ? 'text-emerald-400' : 'text-yellow-400'
+                    }`}
+                    title={popupBlock
+                      ? 'Popup blocker is active. Provider popups, redirects and target=_blank are blocked.'
+                      : 'Popup blocker is OFF. Provider popups and redirects can occur.'}
+                  >
+                    {popupBlock ? <Shield className="w-3 h-3" /> : <ShieldOff className="w-3 h-3" />}
+                    {popupBlock ? 'popups blocked' : 'popups allowed'}
+                  </span>
+                )}
               </div>
 
               <div className="flex items-center gap-2">
+                {!activeServer.isDirect && (
+                  <button
+                    onClick={() => { setPopupBlock((v) => !v); setIframeKey((k) => k + 1); }}
+                    title={popupBlock
+                      ? 'Disable popup blocker (use if a provider refuses to play)'
+                      : 'Enable popup blocker (blocks provider popups & redirects)'}
+                    className={`inline-flex items-center gap-1.5 px-3 py-2 rounded-md border text-sm transition ${
+                      popupBlock
+                        ? 'bg-emerald-500/10 hover:bg-emerald-500/20 border-emerald-500/30 text-emerald-300'
+                        : 'bg-yellow-500/10 hover:bg-yellow-500/20 border-yellow-500/30 text-yellow-300'
+                    }`}
+                  >
+                    {popupBlock ? <Shield className="w-4 h-4" /> : <ShieldOff className="w-4 h-4" />}
+                    <span className="hidden sm:inline">{popupBlock ? 'Blocker: ON' : 'Blocker: OFF'}</span>
+                  </button>
+                )}
                 <button
                   onClick={reload}
                   title="Reload player"
@@ -331,12 +400,6 @@ const VideoPlayer = ({
             <h3 className="text-sm font-semibold uppercase tracking-wider">Servers</h3>
             <span className="text-xs text-neutral-500 hidden md:inline">
               Auto-switches if a server fails. Try another server if one isn&apos;t working.
-            </span>
-          </div>
-          <div className="inline-flex items-center gap-1.5 text-[11px] text-neutral-400 bg-white/5 border border-white/10 rounded-md px-2.5 py-1.5">
-            <Info className="w-3.5 h-3.5 text-neutral-300" />
-            <span>
-              Tip: install <b className="text-white">uBlock Origin</b> to block popup ads from streaming providers.
             </span>
           </div>
         </div>
