@@ -3,7 +3,7 @@
 import { useEffect, useState } from 'react';
 import { Dialog, DialogContent } from '@/components/ui/dialog';
 import { tmdb, backdrop, img } from '@/lib/tmdb';
-import { Play, Plus, Star, X, Calendar, Clock } from 'lucide-react';
+import { Play, Plus, Star, X, Calendar, Clock, Film } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { useRouter } from 'next/navigation';
 import MovieCard from './MovieCard';
@@ -11,13 +11,18 @@ import MovieCard from './MovieCard';
 const DetailModal = ({ open, onOpenChange, item, onCardClick }) => {
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(false);
+  const [showTrailer, setShowTrailer] = useState(false);
   const router = useRouter();
 
   useEffect(() => {
-    if (!open || !item) return;
+    if (!open || !item) {
+      setShowTrailer(false);
+      return;
+    }
     const mediaType = item.media_type || (item.first_air_date ? 'tv' : 'movie');
     setLoading(true);
     setData(null);
+    setShowTrailer(false);
     tmdb.details(mediaType, item.id).then((d) => {
       setData(d ? { ...d, _media_type: mediaType } : null);
       setLoading(false);
@@ -42,40 +47,57 @@ const DetailModal = ({ open, onOpenChange, item, onCardClick }) => {
       <DialogContent className="max-w-5xl p-0 bg-neutral-950 border-neutral-800 text-white overflow-hidden max-h-[92vh] overflow-y-auto">
         <div className="relative">
           {/* Backdrop / Trailer */}
-          <div className="relative aspect-video w-full bg-black">
-            {trailer ? (
+          <div className="relative aspect-video w-full bg-black overflow-hidden">
+            {showTrailer && trailer ? (
               <iframe
-                src={`https://www.youtube.com/embed/${trailer.key}?autoplay=1&mute=1&controls=0&loop=1&playlist=${trailer.key}&modestbranding=1&showinfo=0&rel=0`}
+                src={`https://www.youtube.com/embed/${trailer.key}?autoplay=1&controls=1&rel=0&modestbranding=1`}
                 className="absolute inset-0 w-full h-full"
-                allow="autoplay; encrypted-media"
+                allow="autoplay; encrypted-media; fullscreen"
                 allowFullScreen
               />
             ) : bg ? (
               // eslint-disable-next-line @next/next/no-img-element
               <img src={bg} alt={title} className="absolute inset-0 w-full h-full object-cover" />
-            ) : null}
-            <div className="absolute inset-0 bg-gradient-to-t from-neutral-950 via-neutral-950/40 to-transparent" />
+            ) : (
+              <div className="absolute inset-0 grid place-items-center text-neutral-700">
+                <Film className="w-20 h-20" />
+              </div>
+            )}
+            {!showTrailer && (
+              <div className="absolute inset-0 bg-gradient-to-t from-neutral-950 via-neutral-950/50 to-transparent" />
+            )}
             <button
               onClick={() => onOpenChange(false)}
-              className="absolute top-3 right-3 h-9 w-9 rounded-full bg-black/70 hover:bg-black grid place-items-center border border-white/10"
+              className="absolute top-3 right-3 h-9 w-9 rounded-full bg-black/70 hover:bg-black grid place-items-center border border-white/10 z-10"
               aria-label="Close"
             >
               <X className="w-5 h-5" />
             </button>
-            <div className="absolute bottom-0 left-0 right-0 p-5 md:p-8">
-              <h2 className="text-2xl md:text-4xl font-black drop-shadow-lg">{title}</h2>
-              <div className="mt-3 flex flex-wrap items-center gap-3">
-                <Button
-                  onClick={() => { onOpenChange(false); router.push(`/watch/${mediaType}/${item.id}`); }}
-                  className="bg-white text-black hover:bg-white/90 font-bold"
-                >
-                  <Play className="w-4 h-4 mr-2 fill-black" /> Play
-                </Button>
-                <Button variant="secondary" className="bg-white/15 hover:bg-white/25 border border-white/10">
-                  <Plus className="w-4 h-4 mr-2" /> My List
-                </Button>
+            {!showTrailer && (
+              <div className="absolute bottom-0 left-0 right-0 p-5 md:p-8">
+                <h2 className="text-2xl md:text-4xl font-black drop-shadow-lg">{title}</h2>
+                <div className="mt-3 flex flex-wrap items-center gap-3">
+                  <Button
+                    onClick={() => { onOpenChange(false); router.push(`/watch/${mediaType}/${item.id}`); }}
+                    className="bg-white text-black hover:bg-white/90 font-bold"
+                  >
+                    <Play className="w-4 h-4 mr-2 fill-black" /> Play
+                  </Button>
+                  {trailer && (
+                    <Button
+                      variant="secondary"
+                      onClick={() => setShowTrailer(true)}
+                      className="bg-white/15 hover:bg-white/25 border border-white/10"
+                    >
+                      <Film className="w-4 h-4 mr-2" /> Watch Trailer
+                    </Button>
+                  )}
+                  <Button variant="secondary" className="bg-white/15 hover:bg-white/25 border border-white/10">
+                    <Plus className="w-4 h-4 mr-2" /> My List
+                  </Button>
+                </div>
               </div>
-            </div>
+            )}
           </div>
 
           {/* Meta */}
