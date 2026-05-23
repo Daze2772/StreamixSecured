@@ -3,7 +3,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { STREAMING_SERVERS, getEmbedUrl } from '@/lib/streaming';
 import {
-  Server, AlertCircle, RotateCw, ExternalLink, Loader2,
+  Server, AlertCircle, RotateCw, Loader2,
   CheckCircle2, XCircle, Circle, Youtube, ChevronRight, Play, ShieldAlert,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
@@ -28,10 +28,17 @@ import { Button } from '@/components/ui/button';
 const STATUS = { UNTESTED: 'untested', LOADING: 'loading', OK: 'ok', FAILED: 'failed' };
 const LOAD_TIMEOUT_MS = 8000;
 
-// Per-provider sandbox attribute. If not listed → no sandbox attribute is applied at all.
+// Per-provider sandbox attribute applied to ALL iframes to block popup ads
+// (no `allow-popups` → browser blocks window.open() ad spawns).
+// We keep `allow-presentation` for fullscreen/PiP and `allow-forms` for player UI controls.
+// We intentionally omit `allow-top-navigation` (prevents page-hijack) and `allow-popups` (blocks ads).
+const STRICT_SANDBOX = 'allow-scripts allow-same-origin allow-forms allow-presentation';
 const SANDBOX_ATTR = {
-  'vidsrc-to': 'allow-scripts allow-same-origin allow-presentation allow-forms allow-popups allow-popups-to-escape-sandbox',
-  'vidsrc-dev': 'allow-scripts allow-same-origin allow-presentation allow-forms allow-popups allow-popups-to-escape-sandbox',
+  'vidlink': STRICT_SANDBOX,
+  'autoembed': STRICT_SANDBOX,
+  'vidsrc-to': STRICT_SANDBOX,
+  'vidsrc-xyz': STRICT_SANDBOX,
+  '2embed': STRICT_SANDBOX,
 };
 
 const VideoPlayer = ({
@@ -315,17 +322,6 @@ const VideoPlayer = ({
               </div>
 
               <div className="flex items-center gap-2">
-                {!activeServer.isDirect && embedUrl && (
-                  <a
-                    href={embedUrl}
-                    target="_blank"
-                    rel="noopener noreferrer"
-                    className="inline-flex items-center gap-1.5 px-3 py-2 rounded-md bg-white/10 hover:bg-white/20 border border-white/15 text-sm font-medium text-white transition"
-                  >
-                    <ExternalLink className="w-4 h-4" />
-                    Open in New Tab
-                  </a>
-                )}
                 <button
                   onClick={reload}
                   title="Reload player"
@@ -354,7 +350,7 @@ const VideoPlayer = ({
             <Server className="w-4 h-4" />
             <h3 className="text-sm font-semibold uppercase tracking-wider">Servers</h3>
             <span className="text-xs text-neutral-500 hidden md:inline">
-              Auto-switches if a server fails. Use Open in New Tab as fallback.
+              Auto-switches if a server fails. Try another server if one isn&apos;t working.
             </span>
           </div>
         </div>
