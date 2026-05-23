@@ -1,62 +1,35 @@
 'use client';
 
-import { useEffect, useState, useCallback } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import Navbar from '@/components/streamix/Navbar';
 import Hero from '@/components/streamix/Hero';
 import Row from '@/components/streamix/Row';
+import LazyRow from '@/components/streamix/LazyRow';
 import DetailModal from '@/components/streamix/DetailModal';
 import { tmdb, GENRES } from '@/lib/tmdb';
 
 const App = () => {
   const [hero, setHero] = useState([]);
-  const [rows, setRows] = useState({});
+  const [trendingDay, setTrendingDay] = useState(null);
+  const [trendingWeek, setTrendingWeek] = useState(null);
   const [modalOpen, setModalOpen] = useState(false);
   const [activeItem, setActiveItem] = useState(null);
 
+  // Fetch ONLY hero + first 2 rows immediately. Rest load on scroll.
   useEffect(() => {
     let cancelled = false;
     (async () => {
-      const [
-        trendingDay,
-        trendingWeek,
-        popularMovies,
-        topRated,
-        upcoming,
-        popularTV,
-        action,
-        drama,
-        comedy,
-        scifi,
-        horror,
-      ] = await Promise.all([
+      const [day, week] = await Promise.all([
         tmdb.trending('day'),
         tmdb.trending('week'),
-        tmdb.popularMovies(),
-        tmdb.topRatedMovies(),
-        tmdb.upcomingMovies(),
-        tmdb.popularTV(),
-        tmdb.discoverByGenre(GENRES.Action),
-        tmdb.discoverByGenre(GENRES.Drama),
-        tmdb.discoverByGenre(GENRES.Comedy),
-        tmdb.discoverByGenre(GENRES['Sci-Fi']),
-        tmdb.discoverByGenre(GENRES.Horror),
       ]);
       if (cancelled) return;
-      const heroItems = (trendingDay.results || []).filter((x) => x.backdrop_path && x.overview).slice(0, 6);
+      const heroItems = (day.results || [])
+        .filter((x) => x.backdrop_path && x.overview)
+        .slice(0, 6);
       setHero(heroItems);
-      setRows({
-        trendingDay: trendingDay.results || [],
-        trendingWeek: trendingWeek.results || [],
-        popularMovies: popularMovies.results || [],
-        topRated: topRated.results || [],
-        popularTV: popularTV.results || [],
-        upcoming: upcoming.results || [],
-        action: action.results || [],
-        drama: drama.results || [],
-        comedy: comedy.results || [],
-        scifi: scifi.results || [],
-        horror: horror.results || [],
-      });
+      setTrendingDay(day.results || []);
+      setTrendingWeek(week.results || []);
     })();
     return () => { cancelled = true; };
   }, []);
@@ -73,19 +46,22 @@ const App = () => {
       <Hero items={hero} onMoreInfo={openItem} />
 
       <div className="relative -mt-16 md:-mt-24 z-10 space-y-2 md:space-y-3" id="trending">
-        <Row title="Trending Today" items={rows.trendingDay} loading={!rows.trendingDay} onCardClick={openItem} />
-        <Row title="Trending This Week" items={rows.trendingWeek} loading={!rows.trendingWeek} onCardClick={openItem} />
+        {/* Above-the-fold: eager */}
+        <Row title="Trending Today" items={trendingDay} loading={trendingDay == null} onCardClick={openItem} />
+        <Row title="Trending This Week" items={trendingWeek} loading={trendingWeek == null} onCardClick={openItem} />
+
+        {/* Below-the-fold: lazy-loaded when scrolled into view */}
         <div id="movies" />
-        <Row title="Popular Movies" items={rows.popularMovies} loading={!rows.popularMovies} onCardClick={openItem} />
-        <Row title="Top Rated Movies" items={rows.topRated} loading={!rows.topRated} onCardClick={openItem} />
-        <Row title="Upcoming Movies" items={rows.upcoming} loading={!rows.upcoming} onCardClick={openItem} />
+        <LazyRow title="Popular Movies" fetcher={() => tmdb.popularMovies()} onCardClick={openItem} />
+        <LazyRow title="Top Rated Movies" fetcher={() => tmdb.topRatedMovies()} onCardClick={openItem} />
+        <LazyRow title="Upcoming Movies" fetcher={() => tmdb.upcomingMovies()} onCardClick={openItem} />
         <div id="tv" />
-        <Row title="Popular TV Shows" items={rows.popularTV} loading={!rows.popularTV} onCardClick={openItem} />
-        <Row title="Action & Adventure" items={rows.action} loading={!rows.action} onCardClick={openItem} />
-        <Row title="Drama" items={rows.drama} loading={!rows.drama} onCardClick={openItem} />
-        <Row title="Comedy" items={rows.comedy} loading={!rows.comedy} onCardClick={openItem} />
-        <Row title="Sci-Fi" items={rows.scifi} loading={!rows.scifi} onCardClick={openItem} />
-        <Row title="Horror" items={rows.horror} loading={!rows.horror} onCardClick={openItem} />
+        <LazyRow title="Popular TV Shows" fetcher={() => tmdb.popularTV()} onCardClick={openItem} />
+        <LazyRow title="Action & Adventure" fetcher={() => tmdb.discoverByGenre(GENRES.Action)} onCardClick={openItem} />
+        <LazyRow title="Drama" fetcher={() => tmdb.discoverByGenre(GENRES.Drama)} onCardClick={openItem} />
+        <LazyRow title="Comedy" fetcher={() => tmdb.discoverByGenre(GENRES.Comedy)} onCardClick={openItem} />
+        <LazyRow title="Sci-Fi" fetcher={() => tmdb.discoverByGenre(GENRES['Sci-Fi'])} onCardClick={openItem} />
+        <LazyRow title="Horror" fetcher={() => tmdb.discoverByGenre(GENRES.Horror)} onCardClick={openItem} />
       </div>
 
       <footer className="mt-16 border-t border-white/5 px-4 md:px-12 py-10 text-sm text-neutral-500">

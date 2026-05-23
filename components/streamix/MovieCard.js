@@ -6,10 +6,11 @@ import { Star, Play } from 'lucide-react';
 const MovieCard = ({ item, onClick, size = 'md' }) => {
   const title = item.title || item.name || 'Untitled';
   const year = (item.release_date || item.first_air_date || '').slice(0, 4);
-  const poster = img(item.poster_path, 'w500');
   const mediaType = item.media_type || (item.first_air_date ? 'tv' : 'movie');
 
   const widthClass = size === 'lg' ? 'w-[180px] md:w-[240px]' : 'w-[140px] md:w-[180px]';
+  const posterSize = size === 'lg' ? 'w500' : 'w342'; // smaller = faster
+  const poster = img(item.poster_path, posterSize);
 
   return (
     <button
@@ -23,6 +24,7 @@ const MovieCard = ({ item, onClick, size = 'md' }) => {
             src={poster}
             alt={title}
             loading="lazy"
+            decoding="async"
             className="h-full w-full object-cover transition duration-300 group-hover:brightness-110"
           />
         ) : (
