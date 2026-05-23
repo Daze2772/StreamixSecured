@@ -4,42 +4,29 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { STREAMING_SERVERS, getEmbedUrl } from '@/lib/streaming';
 import {
   Server, AlertCircle, RotateCw, Loader2,
-  CheckCircle2, XCircle, Circle, Youtube, ChevronRight, Play, ShieldAlert,
+  CheckCircle2, XCircle, Circle, Youtube, ChevronRight, Play, Info,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 
 /**
  * VideoPlayer — reliability-first multi-server player for movies & TV.
  *
- * Per-provider sandbox strategy:
- *   - VidSrc.to / VidSrc.dev: permissive sandbox (prevents top-nav hijack but lets player work)
- *   - 2Embed, Embed.su, MultiEmbed: NO sandbox at all (they break otherwise)
- *   - Demo: direct <video>, no iframe
+ * Sandbox strategy: NONE.
+ *   Every embed provider we tested actively rejects iframe `sandbox` and
+ *   refuses to play with a "Please disable sandbox" message. We therefore
+ *   omit sandbox entirely. Popup-ad mitigation is delegated to the user's
+ *   browser ad-blocker (uBlock Origin recommended — surfaced in the UI).
  *
  * UX:
  *   - Lazy mount: shows a big Play overlay until user clicks (saves RAM)
  *   - 8-second load timeout → auto-marks server failed → shows toast → auto-switches
  *   - Per-server status: green ✓ / red ✗ / yellow ⟳ / empty ○
- *   - Always-visible "Open in New Tab" fallback (works even if iframe is fully blocked)
  *   - Reload player button to retry current server
  *   - localStorage remembers last working server per title
  */
 
 const STATUS = { UNTESTED: 'untested', LOADING: 'loading', OK: 'ok', FAILED: 'failed' };
 const LOAD_TIMEOUT_MS = 8000;
-
-// Per-provider sandbox attribute applied to ALL iframes to block popup ads
-// (no `allow-popups` → browser blocks window.open() ad spawns).
-// We keep `allow-presentation` for fullscreen/PiP and `allow-forms` for player UI controls.
-// We intentionally omit `allow-top-navigation` (prevents page-hijack) and `allow-popups` (blocks ads).
-const STRICT_SANDBOX = 'allow-scripts allow-same-origin allow-forms allow-presentation';
-const SANDBOX_ATTR = {
-  'vidlink': STRICT_SANDBOX,
-  'autoembed': STRICT_SANDBOX,
-  'vidsrc-to': STRICT_SANDBOX,
-  'vidsrc-xyz': STRICT_SANDBOX,
-  '2embed': STRICT_SANDBOX,
-};
 
 const VideoPlayer = ({
   mediaType,
@@ -73,7 +60,6 @@ const VideoPlayer = ({
 
   const activeServer = STREAMING_SERVERS[serverIdx];
   const embedUrl = getEmbedUrl(activeServer, mediaType, tmdbId, season, episode);
-  const sandboxAttr = SANDBOX_ATTR[activeServer.id] || null;
 
   const updateStatus = useCallback((idx, status) => {
     setStatuses((prev) => {
@@ -260,7 +246,6 @@ const VideoPlayer = ({
                 allow="autoplay; encrypted-media; fullscreen; picture-in-picture"
                 allowFullScreen
                 referrerPolicy="no-referrer"
-                {...(sandboxAttr ? { sandbox: sandboxAttr } : {})}
                 onLoad={handleIframeLoad}
                 onError={handleIframeError}
                 title={`${activeServer.name} player`}
@@ -314,11 +299,6 @@ const VideoPlayer = ({
                 <span>
                   Playing on <b className="text-white">{activeServer.name}</b>
                 </span>
-                {sandboxAttr && (
-                  <span className="inline-flex items-center gap-1 ml-2 text-[10px] uppercase tracking-wider text-neutral-500">
-                    <ShieldAlert className="w-3 h-3" /> sandboxed
-                  </span>
-                )}
               </div>
 
               <div className="flex items-center gap-2">
@@ -351,6 +331,12 @@ const VideoPlayer = ({
             <h3 className="text-sm font-semibold uppercase tracking-wider">Servers</h3>
             <span className="text-xs text-neutral-500 hidden md:inline">
               Auto-switches if a server fails. Try another server if one isn&apos;t working.
+            </span>
+          </div>
+          <div className="inline-flex items-center gap-1.5 text-[11px] text-neutral-400 bg-white/5 border border-white/10 rounded-md px-2.5 py-1.5">
+            <Info className="w-3.5 h-3.5 text-neutral-300" />
+            <span>
+              Tip: install <b className="text-white">uBlock Origin</b> to block popup ads from streaming providers.
             </span>
           </div>
         </div>
