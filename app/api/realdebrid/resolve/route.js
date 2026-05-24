@@ -107,23 +107,46 @@ function rankTorrent(name) {
   const n = name.toLowerCase();
   let score = 0;
   
-  // Resolution
-  if (n.includes('2160p') || n.includes('4k')) score += 100;
-  else if (n.includes('1080p')) score += 80;
-  else if (n.includes('720p')) score += 50;
+  // Resolution (favor 1080p for best balance of quality and browser compatibility)
+  if (n.includes('1080p')) score += 100;
+  else if (n.includes('720p')) score += 80;
+  else if (n.includes('2160p') || n.includes('4k')) score += 40; // Lower priority - large files, often HEVC
   else if (n.includes('480p')) score += 20;
   
+  // Video codec - CRITICAL FOR BROWSER PLAYBACK
+  if (n.includes('h264') || n.includes('h.264') || n.includes('x264') || n.includes('avc')) {
+    score += 50; // H.264/AVC is universally supported in all browsers
+  } else if (n.includes('h265') || n.includes('h.265') || n.includes('x265') || n.includes('hevc')) {
+    score -= 30; // HEVC/H.265 has limited browser support (Safari only with hardware decode)
+  }
+  
+  // Audio codec - CRITICAL FOR BROWSER PLAYBACK
+  if (n.includes('aac') || n.includes('ac3') || n.includes('dd5.1') || n.includes('ddp') || n.includes('dd ')) {
+    score += 40; // AAC/AC3/Dolby Digital are browser-compatible
+  } else if (n.includes('truehd') || n.includes('dts-hd') || n.includes('dts') || n.includes('atmos')) {
+    score -= 50; // Lossless/advanced audio NOT supported in browsers - will have no sound!
+  }
+  
+  // Container - MP4 is best for browsers
+  if (n.includes('.mp4') || n.includes(' mp4 ')) {
+    score += 30;
+  } else if (n.includes('.mkv') || n.includes(' mkv ')) {
+    score -= 10; // MKV can have compatibility issues
+  }
+  
   // Quality indicators
-  if (n.includes('bluray') || n.includes('blu-ray')) score += 30;
+  if (n.includes('bluray') || n.includes('blu-ray')) score += 25;
   if (n.includes('web-dl') || n.includes('webdl') || n.includes('webrip')) score += 20;
-  if (n.includes('x265') || n.includes('hevc')) score += 15;
-  if (n.includes('10bit')) score += 10;
   
   // Penalize bad quality
   if (/(cam|hdcam|hdts|ts|telesync|telecine|tc|screener|scr)/i.test(n)) score -= 1000;
   
-  // Penalize very large files (likely remuxes, slow to start)
-  if (n.includes('remux')) score -= 20;
+  // Penalize very large files (remuxes are slow to buffer and usually have unsupported audio)
+  if (n.includes('remux')) score -= 40;
+  if (n.includes('10bit')) score -= 5; // Often paired with HEVC
+  
+  // Favor smaller, efficient encodes (better for streaming)
+  if (n.includes('yify') || n.includes('yts')) score += 15;
   
   return score;
 }
@@ -189,12 +212,12 @@ async function unrestrictLink(link) {
   return response.json();
 }
 
-function selectBestFile(files, torrentFileIdx = null) {
+function selectBestFile(files, torrentFileIdx = null, season = null, episode = null) {
   if (!files || !files.length) return null;
   
-  // If Torrentio specified a file index, use it
+  // If Comet specified a file index, use it (they already matched the episode)
   if (torrentFileIdx !== null) {
-    const file = files[torrentFileIdx - 1]; // Torrentio uses 1-based index
+    const file = files[torrentFileIdx - 1]; // 1-based index
     if (file) return file;
   }
   
@@ -204,9 +227,27 @@ function selectBestFile(files, torrentFileIdx = null) {
     return name.match(/\.(mkv|mp4|avi)$/) && f.bytes > 100000000; // > 100MB
   });
   
-  if (!videoFiles.length) return files[0]; // Fallback to first file
+  if (!videoFiles.length) return files[0]; // Fallback
   
-  // Return largest video file
+  // For TV shows, try to match the specific episode
+  if (season && episode) {
+    const seEpPattern = `s${String(season).padStart(2, '0')}e${String(episode).padStart(2, '0')}`;
+    const altPattern = `${season}x${String(episode).padStart(2, '0')}`; // Alternative format
+    
+    const matchedFile = videoFiles.find(f => {
+      const name = f.path?.toLowerCase() || '';
+      return name.includes(seEpPattern) || name.includes(altPattern);
+    });
+    
+    if (matchedFile) {
+      console.log(`[RD] Matched episode file: ${matchedFile.path}`);
+      return matchedFile;
+    }
+    
+    console.log(`[RD] WARNING: Could not find S${season}E${episode} in torrent files`);
+  }
+  
+  // Return largest video file as fallback
   return videoFiles.sort((a, b) => b.bytes - a.bytes)[0];
 }
 
@@ -282,7 +323,12 @@ export async function GET(request) {
     const torrentInfo = await getTorrentInfo(torrentId);
     console.log(`[RD] Torrent status: ${torrentInfo.status}, files: ${torrentInfo.files?.length || 0}`);
     
-    const bestFile = selectBestFile(torrentInfo.files, bestTorrent.fileIdx);
+    const bestFile = selectBestFile(
+      torrentInfo.files,
+      bestTorrent.fileIdx,
+      season ? parseInt(season) : null,
+      episode ? parseInt(episode) : null
+    );
 
     if (!bestFile) {
       return NextResponse.json(
