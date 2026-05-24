@@ -378,18 +378,23 @@ export async function GET(request) {
     await selectFiles(torrentId, String(bestFile.id));
     console.log(`[RD] Files selected, waiting for RD to generate download links...`);
 
-    // Wait and get download links (with retries)
+    // Wait and get download links (with more retries for larger files)
     let info;
-    for (let i = 0; i < 5; i++) {
-      await new Promise(resolve => setTimeout(resolve, 2000));
+    for (let i = 0; i < 10; i++) {
+      await new Promise(resolve => setTimeout(resolve, 3000));
       info = await getTorrentInfo(torrentId);
-      console.log(`[RD] Attempt ${i + 1}/5: status=${info.status}, links=${info.links?.length || 0}`);
+      console.log(`[RD] Attempt ${i + 1}/10: status=${info.status}, links=${info.links?.length || 0}`);
       if (info.links && info.links.length > 0) break;
     }
     
     if (!info.links || info.links.length === 0) {
+      // Tell frontend to keep trying this server (don't switch)
       return NextResponse.json(
-        { error: 'Torrent is being prepared. This can take 10-30 seconds for large files.' },
+        { 
+          error: 'Real-Debrid is preparing the file. Please wait 10-20 seconds and try Premium again.',
+          shouldRetry: true,
+          status: info.status,
+        },
         { status: 202 }
       );
     }
