@@ -204,13 +204,13 @@ const VideoPlayer = ({
       .then(async (r) => {
         const data = await r.json().catch(() => ({}));
         if (cancelled) return;
-        if (!r.ok || !data.ok || !data.streamUrl) {
-          throw new Error(data.error || data.details || `Resolver returned ${r.status}`);
+        if (!r.ok || !data.success || !data.streamUrl) {
+          throw new Error(data.error || `Resolver returned ${r.status}`);
         }
         const payload = {
           url: data.streamUrl,
-          quality: data.quality,
-          title: data.title,
+          quality: data.quality || data.filename,
+          title: data.filename || '',
         };
         premiumCacheRef.current.set(cacheKey, payload);
         setPremium({ state: 'ok', ...payload, error: null });
@@ -377,11 +377,11 @@ const VideoPlayer = ({
               />
             )}
 
-            {/* PREMIUM (Real-Debrid) — proxied video stream */}
+            {/* PREMIUM (Real-Debrid) — direct video from RD API */}
             {playerActive && !showTrailer && isPremiumActive && premium.state === 'ok' && premium.url && (
               <video
                 key={`premium-${iframeKey}-${premium.url}`}
-                src={`/api/stream-proxy?url=${encodeURIComponent(premium.url)}`}
+                src={premium.url}
                 controls
                 autoPlay
                 playsInline
