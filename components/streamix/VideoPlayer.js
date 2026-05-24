@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { STREAMING_SERVERS, getEmbedUrl } from '@/lib/streaming';
+import { resolveAllDebrid } from '@/lib/alldebrid-client';
 import {
   Server, AlertCircle, RotateCw, Loader2,
   CheckCircle2, XCircle, Circle, Youtube, ChevronRight, Play, Shield, ShieldOff,
@@ -192,6 +193,56 @@ const VideoPlayer = ({
     updateStatus(serverIdx, STATUS.LOADING);
     setToast(null);
 
+    // Determine which premium API to use based on server config
+    const server = STREAMING_SERVERS[serverIdx];
+    const premiumType = server?.premiumType || 'realdebrid';
+    
+    console.log(`[Premium] Using ${premiumType} for ${server?.name}`);
+
+    // AllDebrid: Use client-side resolver (avoids server IP block)
+    if (premiumType === 'alldebrid') {
+      const adApiKey = process.env.NEXT_PUBLIC_ALLDEBRID_API_KEY;
+      const cometManifestUrl = process.env.NEXT_PUBLIC_RD_ADDON_MANIFEST_URL || process.env.RD_ADDON_MANIFEST_URL;
+      
+      if (!adApiKey) {
+        throw new Error('AllDebrid API key not configured');
+      }
+
+      resolveAllDebrid({
+        imdbId,
+        mediaType,
+        season: mediaType === 'tv' ? season : null,
+        episode: mediaType === 'tv' ? episode : null,
+        adApiKey,
+        cometManifestUrl,
+      })
+        .then(data => {
+          if (cancelled) return;
+          const payload = {
+            url: data.streamUrl,
+            quality: data.quality || data.filename,
+            title: data.filename || '',
+          };
+          premiumCacheRef.current.set(cacheKey, payload);
+          setPremium({ state: 'ok', ...payload, error: null });
+          updateStatus(serverIdx, STATUS.OK);
+        })
+        .catch(err => {
+          if (cancelled) return;
+          console.error(`[Premium AD] Error:`, err);
+          setPremium({ state: 'error', url: null, quality: null, title: null, error: err.message });
+          updateStatus(serverIdx, STATUS.FAILED);
+          triedAutoSwitchRef.current.add(serverIdx);
+          setToast({ kind: 'error', msg: `AllDebrid: ${err.message}` });
+          setTimeout(() => tryNextServer(), 1500);
+        });
+      
+      return () => { cancelled = true; };
+    }
+
+    // Real-Debrid: Use server-side API
+    const apiEndpoint = '/api/realdebrid/resolve';
+    
     const params = new URLSearchParams({ type: mediaType });
     if (imdbId) params.set('imdb', imdbId);
     if (tmdbId) params.set('tmdb', String(tmdbId));
@@ -199,13 +250,6 @@ const VideoPlayer = ({
       params.set('season', String(season));
       params.set('episode', String(episode));
     }
-
-    // Determine which premium API to use based on server config
-    const server = STREAMING_SERVERS[serverIdx];
-    const premiumType = server?.premiumType || 'realdebrid'; // default to RD
-    const apiEndpoint = premiumType === 'alldebrid' ? '/api/alldebrid/resolve' : '/api/realdebrid/resolve';
-    
-    console.log(`[Premium] Using ${premiumType} for ${server?.name}`);
 
     fetch(`${apiEndpoint}?${params.toString()}`, { signal: controller.signal })
       .then(async (r) => {
