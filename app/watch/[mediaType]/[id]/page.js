@@ -75,6 +75,7 @@ const WatchPage = () => {
       <VideoPlayer
         mediaType={mediaType}
         tmdbId={id}
+        imdbId={data?.external_ids?.imdb_id || null}
         season={season}
         episode={episode}
         poster={bg}

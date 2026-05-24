@@ -5,78 +5,60 @@ import { STREAMING_SERVERS, getEmbedUrl } from '@/lib/streaming';
 import {
   Server, AlertCircle, RotateCw, Loader2,
   CheckCircle2, XCircle, Circle, Youtube, ChevronRight, Play, Shield, ShieldOff,
+  Crown, Sparkles,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 
 /**
  * VideoPlayer — reliability-first multi-server player for movies & TV.
  *
- * Popup-blocker strategy: DOUBLE-IFRAME SANDBOX PROXY.
+ * Servers come in three flavours:
  *
- *   Main page  →  <iframe sandbox="..."> /embed?url=PROVIDER </iframe>  →  <iframe src=PROVIDER>
- *                  (outer sandbox enforced)                                  (no sandbox attr)
+ *  1. PREMIUM (Real-Debrid)  — server.isPremium === true
+ *       Resolved server-side via /api/realdebrid/resolve. Returns a direct
+ *       HTTPS stream URL we play in a native <video>. Almost ad-free.
+ *       Configured via RD_ADDON_MANIFEST_URL (see .env).
  *
- *   - Provider's own anti-sandbox check (`window.frameElement.hasAttribute('sandbox')`)
- *     looks at the INNER iframe element, which has no sandbox attr → it plays.
- *   - HTML5 spec: sandbox flags propagate from OUTER iframe into ALL nested
- *     browsing contexts, so window.open / target="_blank" / top.location
- *     hijacks from inside the provider are blocked by the browser.
- *   - The provider cannot read the outer iframe's sandbox attribute due to
- *     the cross-origin barrier between our page and the provider's window.
+ *  2. EMBED (iframe providers) — server.movie / server.tv resolvers
+ *       Wrapped in our /embed proxy with a strict outer-iframe sandbox.
+ *       The "double-iframe sandbox" trick: provider can't detect our outer
+ *       sandbox (cross-origin barrier) but sandbox flags still propagate
+ *       to the nested context, blocking tab-hijack ads.
  *
- *   The user can toggle the blocker off (per-title persisted) if a specific
- *   provider still misbehaves. Your own ads/UI on the main page are NOT
- *   affected — the sandbox only applies inside the player iframe.
+ *  3. DIRECT (demo)  — server.isDirect === true
+ *       Plain <video> with a hosted .mp4 (used as final fallback).
  *
  * UX:
- *   - Lazy mount: shows a big Play overlay until user clicks (saves RAM)
- *   - 8-second load timeout → auto-marks server failed → shows toast → auto-switches
+ *   - Lazy mount: shows a big Play overlay until user clicks
+ *   - 8-second load timeout for embeds → auto-fail → auto-switch
+ *   - 25-second resolution timeout for Premium → auto-fail → auto-switch
+ *   - Premium results cached in-component per (mediaType, tmdbId, S, E)
  *   - Per-server status: green ✓ / red ✗ / yellow ⟳ / empty ○
- *   - Reload player button to retry current server
  *   - localStorage remembers last working server + popup-blocker preference
  */
 
 const STATUS = { UNTESTED: 'untested', LOADING: 'loading', OK: 'ok', FAILED: 'failed' };
 const LOAD_TIMEOUT_MS = 8000;
+const PREMIUM_TIMEOUT_MS = 25000;
 
-// Sandbox applied to the OUTER iframe (which loads our /embed proxy page).
-// Flags propagate to the nested provider iframe per HTML5 spec.
-//
-// IMPORTANT trade-off: we include `allow-popups` to defeat provider sandbox
-// detection (providers probe `window.open()` on load — if it returns null,
-// they refuse to play with a "disable sandbox" message). With allow-popups,
-// window.open succeeds, providers play happily, but popup tabs CAN spawn.
-//
-// The popups that do spawn are themselves sandboxed (we omit
-// `allow-popups-to-escape-sandbox`) so they inherit all our restrictions —
-// they can't open further popups, can't redirect the top window, and most
-// ad tracking scripts inside them silently fail. So while popups are not
-// fully eliminated, they're heavily neutered.
-//
-// What IS fully blocked:
-//   ✗ allow-top-navigation                       → top.location ad redirects (tab hijack)
-//   ✗ allow-top-navigation-by-user-activation    → ad-overlay click hijack
-//   ✗ allow-popups-to-escape-sandbox             → popup ad chains
-//
-// What's allowed (required for playback):
-//   ✓ allow-scripts        → provider's player JS runs
-//   ✓ allow-same-origin    → provider's cookies / localStorage / session
-//   ✓ allow-forms          → in-player search / quality selector
-//   ✓ allow-presentation   → Picture-in-Picture & fullscreen API
-//   ✓ allow-modals         → confirm() / alert() used by some players
-//   ✓ allow-popups         → defeats sandbox-detection probe
+// Sandbox applied to the OUTER iframe (which loads our /embed proxy).
+// `allow-popups` is included to defeat providers' `window.open()` probe —
+// without it providers refuse to play and show "disable sandbox". The
+// popups that do spawn inherit the sandbox so they're neutered.
+// `allow-top-navigation` is OFF — tab-hijack ads (the worst kind) are blocked.
 const POPUP_BLOCK_SANDBOX =
   'allow-scripts allow-same-origin allow-forms allow-presentation allow-modals allow-popups';
 
 const VideoPlayer = ({
   mediaType,
   tmdbId,
+  imdbId = null,
   season = 1,
   episode = 1,
   poster,
   trailerKey,
 }) => {
-  // Persist last-working server per title
+  // Persistence keys
   const persistKey = useMemo(
     () => `streamix:server:${mediaType}:${tmdbId}`,
     [mediaType, tmdbId],
@@ -103,8 +85,15 @@ const VideoPlayer = ({
   const [playerActive, setPlayerActive] = useState(false);
   const [popupBlock, setPopupBlock] = useState(initialBlock);
 
+  // Premium (Real-Debrid) resolution state
+  // Shape: { state: 'idle'|'loading'|'ok'|'error', url, quality, title, error }
+  const [premium, setPremium] = useState({
+    state: 'idle', url: null, quality: null, title: null, error: null,
+  });
+  const premiumCacheRef = useRef(new Map());
+
   const timerRef = useRef(null);
-  const triedAutoSwitchRef = useRef(new Set()); // prevents infinite auto-switch loop
+  const triedAutoSwitchRef = useRef(new Set());
 
   const activeServer = STREAMING_SERVERS[serverIdx];
   const embedUrl = getEmbedUrl(activeServer, mediaType, tmdbId, season, episode);
@@ -126,17 +115,24 @@ const VideoPlayer = ({
           return idx;
         }
       }
-      // Last resort: demo server (always works)
       const demoIdx = STREAMING_SERVERS.findIndex((s) => s.isDirect);
       return demoIdx >= 0 ? demoIdx : null;
     },
     [statuses],
   );
 
-  // Start load timer when active server changes (only after user clicked Play)
+  const tryNextServer = useCallback(() => {
+    const next = findNextCandidate(serverIdx);
+    if (next != null && next !== serverIdx) setServerIdx(next);
+    setToast(null);
+  }, [findNextCandidate, serverIdx]);
+
+  // ────────────────────────────────────────────────────────────
+  // EMBED load timer (8s) — applies only to iframe providers
+  // ────────────────────────────────────────────────────────────
   useEffect(() => {
     if (!playerActive || showTrailer) return;
-
+    if (activeServer.isPremium) return; // premium has its own resolver effect
     if (activeServer.isDirect) {
       updateStatus(serverIdx, STATUS.OK);
       return;
@@ -147,7 +143,6 @@ const VideoPlayer = ({
     if (timerRef.current) clearTimeout(timerRef.current);
 
     timerRef.current = setTimeout(() => {
-      // Still loading → mark failed and auto-switch
       setStatuses((prev) => {
         if (prev[serverIdx] !== STATUS.LOADING) return prev;
         const next = prev.slice();
@@ -159,7 +154,6 @@ const VideoPlayer = ({
         kind: 'warn',
         msg: `${activeServer.name} failed to load — trying next server…`,
       });
-      // Brief delay so user sees the toast before switch
       setTimeout(() => {
         const next = findNextCandidate(serverIdx);
         if (next != null && next !== serverIdx) setServerIdx(next);
@@ -171,6 +165,86 @@ const VideoPlayer = ({
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [serverIdx, iframeKey, season, episode, playerActive, showTrailer]);
+
+  // ────────────────────────────────────────────────────────────
+  // PREMIUM (Real-Debrid) resolver
+  // ────────────────────────────────────────────────────────────
+  useEffect(() => {
+    if (!activeServer.isPremium) {
+      setPremium((p) => (p.state === 'idle' ? p : { state: 'idle', url: null, quality: null, title: null, error: null }));
+      return;
+    }
+    if (!playerActive || showTrailer) return;
+
+    const cacheKey = `${mediaType}:${tmdbId}:${season}:${episode}`;
+    const hit = premiumCacheRef.current.get(cacheKey);
+    if (hit) {
+      setPremium({ state: 'ok', ...hit, error: null });
+      updateStatus(serverIdx, STATUS.OK);
+      return;
+    }
+
+    let cancelled = false;
+    const controller = new AbortController();
+    const timeoutId = setTimeout(() => controller.abort(), PREMIUM_TIMEOUT_MS);
+
+    setPremium({ state: 'loading', url: null, quality: null, title: null, error: null });
+    updateStatus(serverIdx, STATUS.LOADING);
+    setToast(null);
+
+    const params = new URLSearchParams({ type: mediaType });
+    if (imdbId) params.set('imdb', imdbId);
+    if (tmdbId) params.set('tmdb', String(tmdbId));
+    if (mediaType === 'tv') {
+      params.set('season', String(season));
+      params.set('episode', String(episode));
+    }
+
+    fetch(`/api/realdebrid/resolve?${params.toString()}`, { signal: controller.signal })
+      .then(async (r) => {
+        const data = await r.json().catch(() => ({}));
+        if (cancelled) return;
+        if (!r.ok || !data.ok || !data.streamUrl) {
+          throw new Error(data.error || data.details || `Resolver returned ${r.status}`);
+        }
+        const payload = {
+          url: data.streamUrl,
+          quality: data.quality,
+          title: data.title,
+        };
+        premiumCacheRef.current.set(cacheKey, payload);
+        setPremium({ state: 'ok', ...payload, error: null });
+        updateStatus(serverIdx, STATUS.OK);
+      })
+      .catch((e) => {
+        if (cancelled) return;
+        const msg = e.name === 'AbortError'
+          ? 'Premium resolution timed out.'
+          : (e.message || 'Premium resolution failed.');
+        setPremium({ state: 'error', url: null, quality: null, title: null, error: msg });
+        updateStatus(serverIdx, STATUS.FAILED);
+        triedAutoSwitchRef.current.add(serverIdx);
+        setToast({
+          kind: 'error',
+          msg: `Premium: ${msg} — falling back to next server…`,
+        });
+        setTimeout(() => {
+          if (cancelled) return;
+          const next = findNextCandidate(serverIdx);
+          if (next != null && next !== serverIdx) setServerIdx(next);
+        }, 1800);
+      })
+      .finally(() => {
+        clearTimeout(timeoutId);
+      });
+
+    return () => {
+      cancelled = true;
+      controller.abort();
+      clearTimeout(timeoutId);
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [activeServer.isPremium, mediaType, tmdbId, imdbId, season, episode, playerActive, showTrailer, serverIdx]);
 
   // Persist last selected server
   useEffect(() => {
@@ -198,12 +272,6 @@ const VideoPlayer = ({
     }
   };
 
-  const tryNextServer = () => {
-    const next = findNextCandidate(serverIdx);
-    if (next != null) setServerIdx(next);
-    setToast(null);
-  };
-
   const markBroken = () => {
     updateStatus(serverIdx, STATUS.FAILED);
     triedAutoSwitchRef.current.add(serverIdx);
@@ -214,6 +282,12 @@ const VideoPlayer = ({
     triedAutoSwitchRef.current.delete(serverIdx);
     if (timerRef.current) clearTimeout(timerRef.current);
     updateStatus(serverIdx, STATUS.UNTESTED);
+    // For premium, clear cache for this title so it re-resolves
+    if (activeServer.isPremium) {
+      const cacheKey = `${mediaType}:${tmdbId}:${season}:${episode}`;
+      premiumCacheRef.current.delete(cacheKey);
+      setPremium({ state: 'idle', url: null, quality: null, title: null, error: null });
+    }
     setIframeKey((k) => k + 1);
   };
 
@@ -224,10 +298,16 @@ const VideoPlayer = ({
     setToast(null);
   };
 
-  // Reset playerActive when episode/season changes (TV) — user should re-press play to reload
+  // Reset playerActive when episode/season changes
   useEffect(() => {
     setPlayerActive(false);
   }, [season, episode]);
+
+  // ────────────────────────────────────────────────────────────
+  // Render
+  // ────────────────────────────────────────────────────────────
+  const isPremiumActive = activeServer.isPremium;
+  const showPopupToggle = !activeServer.isDirect && !activeServer.isPremium;
 
   return (
     <div className="w-full">
@@ -235,7 +315,7 @@ const VideoPlayer = ({
       <div className="relative w-full bg-black">
         <div className="relative w-full mx-auto bg-black" style={{ maxWidth: '1400px' }}>
           <div className="relative w-full aspect-video bg-black">
-            {/* Lazy overlay — iframe only mounts after click */}
+            {/* Lazy overlay — player only mounts after click */}
             {!playerActive && !showTrailer && (
               <button
                 onClick={() => setPlayerActive(true)}
@@ -251,13 +331,18 @@ const VideoPlayer = ({
                 <div className="absolute inset-0 bg-gradient-to-t from-black/90 via-black/40 to-black/30" />
                 <div className="absolute inset-0 grid place-items-center">
                   <div className="flex flex-col items-center gap-3 transition-transform group-hover:scale-105">
-                    <div className="h-20 w-20 md:h-24 md:w-24 rounded-full bg-red-600 hover:bg-red-700 grid place-items-center shadow-2xl shadow-red-600/40 ring-4 ring-white/10">
+                    <div className={`h-20 w-20 md:h-24 md:w-24 rounded-full grid place-items-center shadow-2xl ring-4 ring-white/10 ${
+                      isPremiumActive
+                        ? 'bg-gradient-to-br from-amber-400 to-yellow-600 hover:from-amber-300 hover:to-yellow-500 shadow-amber-500/40'
+                        : 'bg-red-600 hover:bg-red-700 shadow-red-600/40'
+                    }`}>
                       <Play className="w-10 h-10 md:w-12 md:h-12 fill-white text-white ml-1" />
                     </div>
                     <span className="text-sm font-semibold text-white/90 tracking-wide">
                       Click to start playback
                     </span>
-                    <span className="text-[11px] text-neutral-300 max-w-md text-center px-4">
+                    <span className="text-[11px] text-neutral-300 max-w-md text-center px-4 flex items-center gap-1.5">
+                      {isPremiumActive && <Crown className="w-3.5 h-3.5 text-amber-400" />}
                       Streaming on <b className="text-white">{activeServer.name}</b>
                       {mediaType === 'tv' && <> · S{season} · E{episode}</>}
                     </span>
@@ -266,7 +351,7 @@ const VideoPlayer = ({
               </button>
             )}
 
-            {/* Active player content */}
+            {/* Trailer */}
             {playerActive && showTrailer && trailerKey && (
               <iframe
                 key={`trailer-${trailerKey}`}
@@ -278,6 +363,7 @@ const VideoPlayer = ({
               />
             )}
 
+            {/* DIRECT (demo) */}
             {playerActive && !showTrailer && activeServer.isDirect && (
               <video
                 key={`direct-${iframeKey}`}
@@ -291,7 +377,64 @@ const VideoPlayer = ({
               />
             )}
 
-            {playerActive && !showTrailer && !activeServer.isDirect && embedUrl && (
+            {/* PREMIUM (Real-Debrid) — direct <video> from resolved URL */}
+            {playerActive && !showTrailer && isPremiumActive && premium.state === 'ok' && premium.url && (
+              <video
+                key={`premium-${iframeKey}-${premium.url}`}
+                src={premium.url}
+                controls
+                autoPlay
+                playsInline
+                poster={poster || undefined}
+                crossOrigin="anonymous"
+                className="w-full h-full object-contain bg-black"
+                onCanPlay={() => updateStatus(serverIdx, STATUS.OK)}
+                onError={() => {
+                  updateStatus(serverIdx, STATUS.FAILED);
+                  triedAutoSwitchRef.current.add(serverIdx);
+                  setToast({ kind: 'error', msg: 'Premium stream playback failed — trying next server…' });
+                  setTimeout(() => tryNextServer(), 1000);
+                }}
+              />
+            )}
+
+            {/* PREMIUM loading overlay */}
+            {playerActive && !showTrailer && isPremiumActive && premium.state === 'loading' && (
+              <div className="absolute inset-0 grid place-items-center bg-black/80 backdrop-blur-sm">
+                <div className="flex flex-col items-center gap-4 text-center px-6">
+                  <div className="relative">
+                    <div className="absolute inset-0 rounded-full bg-amber-500/20 blur-2xl animate-pulse" />
+                    <div className="relative h-16 w-16 rounded-full bg-gradient-to-br from-amber-400 to-yellow-600 grid place-items-center ring-4 ring-amber-500/30">
+                      <Loader2 className="w-8 h-8 text-white animate-spin" />
+                    </div>
+                  </div>
+                  <div>
+                    <p className="text-base font-semibold text-amber-100 flex items-center justify-center gap-1.5">
+                      <Crown className="w-4 h-4 text-amber-400" />
+                      Unlocking Premium stream
+                    </p>
+                    <p className="text-xs text-neutral-400 mt-1.5 max-w-sm">
+                      Asking Real-Debrid for the cleanest mirror… usually takes 2–5 seconds.
+                    </p>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {/* PREMIUM error overlay (brief — auto-switching) */}
+            {playerActive && !showTrailer && isPremiumActive && premium.state === 'error' && (
+              <div className="absolute inset-0 grid place-items-center bg-black/85 px-6">
+                <div className="max-w-md text-center">
+                  <AlertCircle className="w-10 h-10 mx-auto mb-3 text-amber-400" />
+                  <p className="text-base font-semibold text-amber-100">Premium unavailable for this title</p>
+                  <p className="text-xs text-neutral-400 mt-2 break-words">{premium.error}</p>
+                  <p className="text-xs text-neutral-500 mt-3">Switching to next server…</p>
+                </div>
+              </div>
+            )}
+
+            {/* EMBED iframe */}
+            {playerActive && !showTrailer && !activeServer.isDirect && !isPremiumActive && embedUrl && (
               <iframe
                 key={`${activeServer.id}-${season}-${episode}-${iframeKey}-${popupBlock ? 'pb' : 'np'}`}
                 src={popupBlock ? `/embed?url=${encodeURIComponent(embedUrl)}` : embedUrl}
@@ -306,7 +449,7 @@ const VideoPlayer = ({
               />
             )}
 
-            {playerActive && !showTrailer && !activeServer.isDirect && !embedUrl && (
+            {playerActive && !showTrailer && !activeServer.isDirect && !isPremiumActive && !embedUrl && (
               <div className="absolute inset-0 grid place-items-center text-center p-6">
                 <div>
                   <AlertCircle className="w-10 h-10 mx-auto mb-3 text-red-500" />
@@ -316,8 +459,8 @@ const VideoPlayer = ({
               </div>
             )}
 
-            {/* Loading badge */}
-            {playerActive && !showTrailer && !activeServer.isDirect && statuses[serverIdx] === STATUS.LOADING && (
+            {/* Loading badge (embed only) */}
+            {playerActive && !showTrailer && !activeServer.isDirect && !isPremiumActive && statuses[serverIdx] === STATUS.LOADING && (
               <div className="absolute top-3 left-3 inline-flex items-center gap-2 px-2.5 py-1.5 rounded-md bg-black/70 backdrop-blur text-xs text-neutral-100">
                 <Loader2 className="w-3.5 h-3.5 animate-spin" />
                 Connecting to <b>{activeServer.name}</b>…
@@ -345,15 +488,29 @@ const VideoPlayer = ({
             </div>
           )}
 
-          {/* Action bar — always visible, prominent "Open in New Tab" */}
+          {/* Action bar */}
           {!showTrailer && (
             <div className="px-2 md:px-0 mt-3 flex items-center justify-between flex-wrap gap-3">
-              <div className="inline-flex items-center gap-2 text-xs text-neutral-300">
+              <div className="inline-flex items-center gap-2 text-xs text-neutral-300 flex-wrap">
                 <StatusDot status={statuses[serverIdx]} />
-                <span>
+                <span className="inline-flex items-center gap-1.5">
+                  {isPremiumActive && <Crown className="w-3.5 h-3.5 text-amber-400" />}
                   Playing on <b className="text-white">{activeServer.name}</b>
                 </span>
-                {!activeServer.isDirect && (
+
+                {/* Premium quality badge */}
+                {isPremiumActive && premium.state === 'ok' && premium.quality && (
+                  <span
+                    className="inline-flex items-center gap-1 ml-2 text-[10px] uppercase tracking-wider text-amber-300 bg-amber-500/10 border border-amber-500/30 rounded px-1.5 py-0.5"
+                    title={premium.title || ''}
+                  >
+                    <Sparkles className="w-3 h-3" />
+                    {premium.quality.length > 32 ? premium.quality.slice(0, 32) + '…' : premium.quality}
+                  </span>
+                )}
+
+                {/* Popup-blocker badge (embeds only) */}
+                {showPopupToggle && (
                   <span
                     className={`inline-flex items-center gap-1 ml-2 text-[10px] uppercase tracking-wider ${
                       popupBlock ? 'text-emerald-400' : 'text-yellow-400'
@@ -369,12 +526,12 @@ const VideoPlayer = ({
               </div>
 
               <div className="flex items-center gap-2">
-                {!activeServer.isDirect && (
+                {showPopupToggle && (
                   <button
                     onClick={() => { setPopupBlock((v) => !v); setIframeKey((k) => k + 1); }}
                     title={popupBlock
-                      ? 'Tab-hijack protection is ON. Disable only if this provider refuses to play (rare with current config).'
-                      : 'Enable tab-hijack protection (blocks the provider from redirecting your tab and limits popups).'}
+                      ? 'Tab-hijack protection is ON. Disable only if this provider refuses to play.'
+                      : 'Enable tab-hijack protection (blocks redirects, limits popups).'}
                     className={`inline-flex items-center gap-1.5 px-3 py-2 rounded-md border text-sm transition ${
                       popupBlock
                         ? 'bg-emerald-500/10 hover:bg-emerald-500/20 border-emerald-500/30 text-emerald-300'
@@ -413,7 +570,7 @@ const VideoPlayer = ({
             <Server className="w-4 h-4" />
             <h3 className="text-sm font-semibold uppercase tracking-wider">Servers</h3>
             <span className="text-xs text-neutral-500 hidden md:inline">
-              Auto-switches if a server fails. Try another server if one isn&apos;t working.
+              Auto-switches if a server fails. The Premium tab uses Real-Debrid for nearly ad-free playback.
             </span>
           </div>
         </div>
@@ -422,6 +579,43 @@ const VideoPlayer = ({
           {STREAMING_SERVERS.map((s, i) => {
             const isActive = i === serverIdx && !showTrailer;
             const st = statuses[i];
+            const isPrem = s.isPremium;
+
+            if (isPrem) {
+              return (
+                <button
+                  key={s.id}
+                  onClick={() => selectServer(i)}
+                  className={`relative px-3 py-2.5 rounded-md text-sm font-semibold border transition flex items-center gap-2 text-left min-w-[160px] ${
+                    isActive
+                      ? 'bg-gradient-to-br from-amber-500 to-yellow-600 border-amber-400 text-white shadow-lg shadow-amber-500/40 ring-2 ring-amber-300/50'
+                      : st === STATUS.FAILED
+                      ? 'bg-amber-950/40 border-amber-900/60 text-amber-200/70 hover:border-amber-700'
+                      : 'bg-gradient-to-br from-amber-950/60 to-yellow-950/40 border-amber-500/40 hover:border-amber-400 text-amber-100 hover:shadow-md hover:shadow-amber-500/20'
+                  }`}
+                  title="Real-Debrid powered — almost ad-free. Requires RD_ADDON_MANIFEST_URL set on the server."
+                >
+                  <Crown className={`w-4 h-4 flex-none ${isActive ? 'text-white' : 'text-amber-400'}`} />
+                  <span className="flex flex-col items-start leading-tight">
+                    <span className="flex items-center gap-1.5">
+                      {s.name}
+                      <span className={`text-[9px] font-bold px-1.5 py-0.5 rounded uppercase tracking-wider ${
+                        isActive ? 'bg-white/25 text-white' : 'bg-amber-500/20 text-amber-300'
+                      }`}>
+                        Almost no ads
+                      </span>
+                    </span>
+                    <span className="text-[10px] font-normal opacity-80">
+                      {s.sub}
+                    </span>
+                  </span>
+                  {st === STATUS.LOADING && (
+                    <Loader2 className="w-3.5 h-3.5 absolute right-2 top-2 animate-spin text-amber-200" />
+                  )}
+                </button>
+              );
+            }
+
             return (
               <button
                 key={s.id}
@@ -460,6 +654,13 @@ const VideoPlayer = ({
             </button>
           )}
         </div>
+
+        {/* Premium info note */}
+        <p className="mt-3 text-[11px] text-neutral-500 max-w-2xl leading-relaxed">
+          <Crown className="w-3 h-3 inline mr-1 -mt-0.5 text-amber-400/70" />
+          <b className="text-amber-300/80">Premium (Real-Debrid)</b> streams direct from RD&apos;s servers — very low ads, no popups, faster start.
+          Requires a configured Real-Debrid manifest URL on the server. If a title isn&apos;t cached yet, the player falls back automatically.
+        </p>
       </section>
     </div>
   );
