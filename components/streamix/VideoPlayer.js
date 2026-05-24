@@ -200,7 +200,14 @@ const VideoPlayer = ({
       params.set('episode', String(episode));
     }
 
-    fetch(`/api/realdebrid/resolve?${params.toString()}`, { signal: controller.signal })
+    // Determine which premium API to use based on server config
+    const server = STREAMING_SERVERS[serverIdx];
+    const premiumType = server?.premiumType || 'realdebrid'; // default to RD
+    const apiEndpoint = premiumType === 'alldebrid' ? '/api/alldebrid/resolve' : '/api/realdebrid/resolve';
+    
+    console.log(`[Premium] Using ${premiumType} for ${server?.name}`);
+
+    fetch(`${apiEndpoint}?${params.toString()}`, { signal: controller.signal })
       .then(async (r) => {
         const data = await r.json().catch(() => ({}));
         if (cancelled) return;
