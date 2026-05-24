@@ -377,18 +377,19 @@ const VideoPlayer = ({
               />
             )}
 
-            {/* PREMIUM (Real-Debrid) — direct <video> from resolved URL */}
+            {/* PREMIUM (Real-Debrid) — iframe embed for Comet playback */}
             {playerActive && !showTrailer && isPremiumActive && premium.state === 'ok' && premium.url && (
-              <video
+              <iframe
                 key={`premium-${iframeKey}-${premium.url}`}
                 src={premium.url}
-                controls
-                autoPlay
-                playsInline
-                poster={poster || undefined}
-                crossOrigin="anonymous"
-                className="w-full h-full object-contain bg-black"
-                onCanPlay={() => updateStatus(serverIdx, STATUS.OK)}
+                className="absolute inset-0 w-full h-full"
+                allow="autoplay; encrypted-media; fullscreen; picture-in-picture"
+                allowFullScreen
+                referrerPolicy="origin"
+                title="Premium Real-Debrid Player"
+                onLoad={() => {
+                  updateStatus(serverIdx, STATUS.OK);
+                }}
                 onError={() => {
                   updateStatus(serverIdx, STATUS.FAILED);
                   triedAutoSwitchRef.current.add(serverIdx);
