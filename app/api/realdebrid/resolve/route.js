@@ -96,25 +96,9 @@ async function searchTorrentsViaComet(imdbId, season = null, episode = null) {
     
     console.log(`[RD] Comet found ${torrents.length} torrents`);
     
-    // Filter for browser-compatible torrents FIRST
-    const compatibleTorrents = torrents.filter(t => {
-      const n = t.name.toLowerCase();
-      
-      // MUST NOT have unsupported audio codecs
-      if (n.includes('truehd') || n.includes('dts-hd') || n.includes('dts') || n.includes('atmos')) {
-        return false; // Will have NO audio in browser
-      }
-      
-      // Prefer supported codecs
-      const hasGoodAudio = n.includes('aac') || n.includes('ac3') || n.includes('dd') || n.includes('mp3');
-      const hasGoodVideo = n.includes('h264') || n.includes('x264') || n.includes('avc') || !n.includes('hevc');
-      
-      return hasGoodAudio || hasGoodVideo; // At least one should be good
-    });
-    
-    console.log(`[RD] Filtered to ${compatibleTorrents.length} browser-compatible torrents`);
-    
-    return compatibleTorrents;
+    // DON'T filter - return ALL torrents, let ranking handle preferences
+    // Browser may support some "incompatible" codecs (Safari supports HEVC)
+    return torrents;
     
   } catch (error) {
     console.error('[RD] Comet search error:', error.message);
@@ -315,25 +299,10 @@ export async function GET(request) {
         { status: 404 }
       );
     }
-    
-    // Check if filtering removed all torrents
-    const totalFound = torrents.length;
-    if (totalFound > 0 && torrents.every(t => {
-      const n = t.name.toLowerCase();
-      return n.includes('truehd') || n.includes('dts') || n.includes('atmos');
-    })) {
-      console.log('[RD] All torrents have incompatible audio codecs');
-      return NextResponse.json(
-        { 
-          error: `Found ${totalFound} cached torrents, but all use audio codecs not supported in browsers (TrueHD/DTS/Atmos)`,
-          hint: 'Try VidLink or VidSrc servers instead - they work in all browsers'
-        },
-        { status: 404 }
-      );
-    }
 
     // Comet already filters for RD-cached torrents, so we can skip availability check
-    // and just use the best-ranked torrent directly
+    // Note: We're NOT filtering by codec anymore - let browser try all torrents
+    // Browser may support some codecs depending on device/OS (Safari supports HEVC)
     console.log(`[RD] Found ${torrents.length} RD-cached torrents`);
 
     // Step 2: Rank and select best torrent
