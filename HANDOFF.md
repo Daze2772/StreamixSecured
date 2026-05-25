@@ -218,12 +218,21 @@ Frontend testing in Playwright is gated behind explicit user permission. Default
 
 These are **optional polish** items the project hasn't done yet:
 
-1. **Custom Tailwind player skin** (replace native HTML5 controls). Estimated 1-2 days. Risks: progress bar must handle `durationchange` events live, seeking-while-encoding needs a "buffering" state, mobile touch UX needs care. See chat history for full risk breakdown.
-2. **Multi-bitrate HLS ladder** (1080p + 720p + 480p). Requires running ffmpeg with multiple output streams. 3× the CPU. Only do this if user complains about bandwidth.
+1. **Hover-preview thumbnails on the scrub bar**. Requires server-side sprite-sheet generation in ffmpeg (`-vf fps=1/10 -vsync vfr` outputting a JPG every 10s, then a WebVTT track mapping timestamps to sprite coords). Adds ~30s to ffmpeg cold start and ~5-20 MB to /tmp per session. Worth it if you want a YouTube-grade scrub UX.
+2. **Multi-bitrate HLS ladder** (1080p + 720p + 480p) so the quality picker becomes functional. Requires running ffmpeg with multiple output streams. ~3× CPU. The settings menu already has the UI; just wire it to `hls.levels` once you have ABR.
 3. **Skip-intro detection** (heuristic on audio fingerprint + episode pattern). Significant ML or third-party API integration.
-4. **Picture-in-Picture button** in custom controls. One line: `await video.requestPictureInPicture()`.
-5. **Subtitle support**. Comet doesn't pass subtitle tracks. Would need to scrape OpenSubtitles or similar separately and inject a `<track>` element.
+4. **Subtitle support**. Comet doesn't pass subtitle tracks. Would need to scrape OpenSubtitles or similar separately and inject a `<track>` element + add a CC button to the controls bar.
+5. **Cast / AirPlay buttons**. Add `<button>` that calls `cast.framework.CastContext.getInstance().requestSession()` (Chromecast SDK) or surfaces Safari's AirPlay picker via `webkitShowPlaybackTargetPicker()`.
 6. **MediaFusion as a Comet alternative** (different scraper, may have better cached coverage for some titles). Same RD key works. Drop-in URL swap in `.env`.
+
+### Already shipped (no need to redo)
+
+- ✅ Custom Tailwind controls (scrub bar, volume, time, speed, PiP, fullscreen, settings menu) — `components/streamix/HlsVideo.js`
+- ✅ Click-to-pause + double-click-fullscreen + keyboard shortcuts (Space/K/F/M/P, ←/→/↑/↓)
+- ✅ Auto-hide controls during playback, instant-show on mouse move
+- ✅ Hover-time tooltip on scrub bar
+- ✅ Buffering spinner
+- ✅ Center play/pause flash icon on click toggle
 
 ---
 
