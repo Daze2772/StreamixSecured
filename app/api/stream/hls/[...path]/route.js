@@ -77,7 +77,30 @@ export async function GET(request, { params }) {
       );
     }
     const playlistPath = path.join(session.dir, 'index.m3u8');
-    return serveFile(playlistPath, 'application/vnd.apple.mpegurl');
+    let txt;
+    try {
+      txt = await fsp.readFile(playlistPath, 'utf8');
+    } catch (e) {
+      return NextResponse.json({ error: 'Playlist not ready', detail: e.message }, { status: 404 });
+    }
+
+    // ── Rewrite playlist so hls.js plays it as VOD instead of LIVE ──
+    // ffmpeg writes #EXT-X-PLAYLIST-TYPE:EVENT (which makes players seek
+    // to the live edge whenever new segments append). We swap that to VOD
+    // and, if ffmpeg has cleanly exited, append #EXT-X-ENDLIST so the
+    // player knows the total duration.
+    txt = txt.replace(/#EXT-X-PLAYLIST-TYPE:EVENT\b/i, '#EXT-X-PLAYLIST-TYPE:VOD');
+    const ffExited = session.ffmpegExited && session.ffmpegExited.code === 0;
+    if (ffExited && !/#EXT-X-ENDLIST/.test(txt)) {
+      txt = txt.trimEnd() + '\n#EXT-X-ENDLIST\n';
+    }
+
+    const headers = {
+      'Content-Type': 'application/vnd.apple.mpegurl',
+      'Cache-Control': 'no-store',
+      'Access-Control-Allow-Origin': '*',
+    };
+    return new Response(txt, { status: 200, headers });
   }
 
   // ─── Segment ─────────────────────────────────────────────────

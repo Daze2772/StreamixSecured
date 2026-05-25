@@ -132,6 +132,14 @@ backend:
           • TV resolver (GoT S01E01): Same correct shape as movie resolver
           • Error handling: Returns 400 for missing parameters
           All response fields validated and working correctly.
+      - working: true
+        agent: "testing"
+        comment: |
+          ✅ REGRESSION TEST - UNKNOWN-badge filter verified:
+          • The Boys S1E1 (tt1190634): Returns quality without "UNKNOWN", filename contains 
+            "The.Boys.S01E01", all 5 alternates also free of "UNKNOWN"
+          • Filter correctly rejects streams with "UNKNOWN" in Comet name (lines 56-58, 174)
+          • Prevents wrong-content playback (BBC clips, adult content with overlapping titles)
   - task: "HLS transcoder sessions (ffmpeg → HLS playlist + segments)"
     implemented: true
     working: true
@@ -187,6 +195,16 @@ backend:
           • Security: Invalid session IDs rejected (400), path traversal attempts blocked (400)
           • Performance: Cold start 8s, warm requests <0.01s
           All endpoints working correctly with proper validation and error handling.
+      - working: true
+        agent: "testing"
+        comment: |
+          ✅ REGRESSION TEST - VOD playlist rewrite verified:
+          • Fight Club (tt0137523): Playlist contains #EXT-X-PLAYLIST-TYPE:VOD (not EVENT)
+          • Cold start: 9.74s, playlist served correctly
+          • After 90s: #EXT-X-ENDLIST present, 2079 segments (full 2h19m movie)
+          • Rewrite logic (line 92): EVENT → VOD on every read
+          • ENDLIST logic (lines 93-96): Appended when ffmpeg exits cleanly (code=0)
+          • Prevents hls.js from auto-seeking to "live edge" during playback
   - task: "Video stream proxy (legacy)"
     implemented: true
     working: true
@@ -236,8 +254,8 @@ frontend:
 
 metadata:
   created_by: "main_agent"
-  version: "1.1"
-  test_sequence: 3
+  version: "1.2"
+  test_sequence: 4
   run_ui: false
 
 test_plan:
@@ -344,3 +362,30 @@ agent_communication:
       The complete HLS streaming pipeline is production-ready:
       /api/realdebrid/resolve → HLS session creation → ffmpeg transcoding → 
       /api/stream/hls/[sessionId]/[file] → browser playback via hls.js
+  - agent: "testing"
+    message: |
+      ✅ REGRESSION TESTS COMPLETE - ALL 7 TESTS PASSED (7/7)
+      
+      Verified two critical fixes after recent code changes:
+      
+      FIX #1: UNKNOWN-badge filter (lines 56-58, 174 in resolve/route.js)
+      • The Boys S1E1 (tt1190634): ✅ Quality does NOT contain "UNKNOWN"
+      • Filename correctly contains "The.Boys.S01E01.720p.AAC.5.1.x264"
+      • All 5 alternates also free of "UNKNOWN" in quality field
+      • Filter prevents wrong-content playback (BBC clips, adult content)
+      
+      FIX #2: VOD playlist rewrite (lines 92-96 in hls/[...path]/route.js)
+      • Fight Club (tt0137523): ✅ Playlist contains #EXT-X-PLAYLIST-TYPE:VOD
+      • ✅ Does NOT contain #EXT-X-PLAYLIST-TYPE:EVENT (correctly rewritten)
+      • ✅ After 90s: #EXT-X-ENDLIST present with 2079 segments (full movie)
+      • Prevents hls.js from auto-seeking to "live edge" during playback
+      
+      REGRESSION TESTS (4/4 passed):
+      • GoT S01E01: ✅ Still returns HLS streamUrl correctly
+      • Missing params: ✅ Returns 400 as expected
+      • Bad session ID: ✅ Returns 400 (security working)
+      • Path traversal: ✅ Returns 400 (security working)
+      
+      All existing functionality intact. Both fixes working as designed.
+      Premium HLS streaming is production-ready with improved content filtering
+      and proper VOD playback behavior.

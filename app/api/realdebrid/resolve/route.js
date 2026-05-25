@@ -46,6 +46,17 @@ function rankStream(filename, sizeBytes, name = '') {
     score -= 8000;         // not cached: unusable for <video>
   }
 
+  // ─── ★★★ UNKNOWN-quality reject ─────────────────────────────
+  // Comet stamps a torrent with `[RD⚡] COMET UNKNOWN` when the addon's
+  // own quality detection failed to recognize the file. In practice
+  // these are almost always content mismatches — non-English BBC clips,
+  // adult content with overlapping titles, mistagged uploads. We refuse
+  // to play them by giving an unrecoverable negative score (caller
+  // filters anything below MIN_SCORE).
+  if (/\bUNKNOWN\b/i.test(name)) {
+    score -= 100000;
+  }
+
   // ─── Container ───────────────────────────────────────────────
   if (/\.mp4(\b|$)/.test(n)) score += 1000;          // ★ MP4 = best
   else if (/\.webm(\b|$)/.test(n)) score += 800;
@@ -155,8 +166,12 @@ export async function GET(request) {
     }
 
     // Pull filename + size + name (cache badge) out of behaviorHints+stream.
+    // Hard-reject streams whose Comet badge says "UNKNOWN" — those are
+    // content mismatches in 99% of cases (BBC clips, adult content with
+    // overlapping titles, mistagged uploads).
     const validStreams = data.streams
       .filter((s) => s.url && /^https?:\/\//i.test(s.url))
+      .filter((s) => !/\bUNKNOWN\b/i.test(s.name || ''))
       .map((s) => {
         const filename = s?.behaviorHints?.filename || s.name || '';
         const sizeBytes = Number(s?.behaviorHints?.videoSize) || 0;
