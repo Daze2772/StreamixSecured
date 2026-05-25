@@ -205,9 +205,8 @@ const VideoPlayer = ({
     if (premiumType === 'alldebrid') {
       clearTimeout(timeoutId); // Clear default timeout for client-side resolver
 
-      const adApiKey = process.env.NEXT_PUBLIC_ALLDEBRID_API_KEY || 'FD4JV2CEL0GEGMFPItVdl3UT';
-      const cometManifestUrl = process.env.NEXT_PUBLIC_RD_ADDON_MANIFEST_URL ||
-                               'https://comet.elfhosted.com/eyJtYXhSZXN1bHRzUGVyUmVzb2x1dGlvbiI6MCwibWF4U2l6ZSI6MCwiY2FjaGVkT25seSI6ZmFsc2UsInNvcnRDYWNoZWRVbmNhY2hlZFRvZ2V0aGVyIjpmYWxzZSwicmVtb3ZlVHJhc2giOnRydWUsInJlc3VsdEZvcm1hdCI6WyJhbGwiXSwiZGVicmlkU2VydmljZXMiOlt7InNlcnZpY2UiOiJyZWFsZGVicmlkIiwiYXBpS2V5IjoiUUdUQ1ZWSFBJN0xEVzRZVUlaU1FXNU9CNkc2QlBEQk9ZUldWS0FZTVhOQlRBQ080NE5EQSJ9XSwiZW5hYmxlVG9ycmVudCI6ZmFsc2UsImRlZHVwbGljYXRlU3RyZWFtcyI6ZmFsc2UsInNjcmFwZURlYnJpZEFjY291bnRUb3JyZW50cyI6ZmFsc2UsImRlYnJpZlN0cmVhbVByb3h5UGFzc3dvcmQiOiIiLCJsYW5ndWFnZXMiOnsicmVxdWlyZWQiOltdLCJhbGxvd2VkIjpbXSwiZXhjbHVkZSI6W10sInByZWZlcnJlZCI6W119LCJyZXNvbHV0aW9ucyI6e30sIm9wdGlvbnMiOnsicmVtb3ZlX3JhbmtzX3VuZGVyIjotMTAwMDAwMDAwMDAsImFsbG93X2VuZ2xpc2hfaW5fbGFuZ3VhZ2VzIjpmYWxzZSwicmVtb3ZlX3Vua25vd25fbGFuZ3VhZ2VzIjpmYWxzZX19/manifest.json';
+      const adApiKey = process.env.NEXT_PUBLIC_ALLDEBRID_API_KEY;
+      const cometManifestUrl = process.env.NEXT_PUBLIC_RD_ADDON_MANIFEST_URL;
 
       console.log('[Premium AD] API Key:', adApiKey ? 'SET' : 'MISSING');
       console.log('[Premium AD] Comet URL:', cometManifestUrl ? 'SET' : 'MISSING');

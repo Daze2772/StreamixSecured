@@ -81,9 +81,8 @@ memory/test_credentials.md
 android-sdk/node_modules/@next/swc-linux-arm64-gnu/next-swc.linux-arm64-gnu.node
 node_modules/@next/swc-linux-arm64-musl/next-swc.linux-arm64-musl.node
 node_modules/@next/swc-linux-arm64-gnu/next-swc.linux-arm64-gnu.node
-.env
-.env.*
-*.env
+# .env is intentionally committed for Emergent deployment (it carries
+# RD_ADDON_MANIFEST_URL, TMDB keys, etc.). Only true secrets stay ignored.
 credentials.json
 *.key
 .credentials

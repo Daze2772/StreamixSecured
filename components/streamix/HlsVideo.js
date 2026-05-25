@@ -77,21 +77,30 @@ export default function HlsVideo({
 
         if (Hls && Hls.isSupported()) {
           hls = new Hls({
-            // Start a bit conservative — server is still encoding ahead.
-            maxBufferLength: 30,
-            maxMaxBufferLength: 60,
-            // Be patient: ffmpeg might not have segment N+5 ready yet.
+            // ★ Force start at byte 0. Without this, hls.js sees a
+            //   growing playlist (ffmpeg is still encoding) without
+            //   #EXT-X-ENDLIST and treats it as a live stream — its
+            //   default startPosition: -1 means "start at the live
+            //   edge", which was making the player jump to ~12 s before
+            //   the most-recently-encoded segment every time the
+            //   playlist refreshed. We always want to start at 0.
+            startPosition: 0,
+            // Don't try to keep up with a moving live edge.
+            liveSyncDurationCount: 0,
+            liveMaxLatencyDurationCount: Infinity,
+            lowLatencyMode: false,
+            // Buffer aggressively — server is encoding faster than
+            // realtime so segments are always available.
+            maxBufferLength: 60,
+            maxMaxBufferLength: 600,
+            // Be patient on the first fragment (ffmpeg may still be
+            // ramping up its segment writes).
             manifestLoadingTimeOut: 20000,
             manifestLoadingMaxRetry: 4,
             manifestLoadingRetryDelay: 1000,
             fragLoadingTimeOut: 30000,
             fragLoadingMaxRetry: 6,
             fragLoadingRetryDelay: 1000,
-            // Refresh the playlist often so newly-encoded segments show up
-            // for live-ish playback while transcoding.
-            liveSyncDuration: 8,
-            liveMaxLatencyDuration: 20,
-            lowLatencyMode: false,
           });
           hlsRef.current = hls;
 
