@@ -27,6 +27,17 @@ function getCometBase() {
   return RD_ADDON_MANIFEST_URL.replace(/\/manifest\.json\s*$/i, '').replace(/\/+$/, '');
 }
 
+// Resolution tag we can pull from a release filename (e.g. "Fight.Club.1080p.BrRip.x264.mp4").
+// Returns the lowercased label ('1080p', '720p', …) or null when nothing matches —
+// in which case the candidate is simply omitted from the per-quality menu.
+function parseResolution(filename) {
+  const m = (filename || '').match(/\b(2160p|1080p|720p|480p|360p)\b/i);
+  return m ? m[1].toLowerCase() : null;
+}
+
+// High → low display order. Anything outside this list is skipped from the picker.
+const RES_ORDER = ['2160p', '1080p', '720p', '480p', '360p'];
+
 // Browser playback compatibility scorer.
 // Higher = more likely to play in a stock browser <video> tag.
 // `name` is Comet's badge (e.g. "[RD⚡] Comet 1080p" — ⚡ = cached/instant,
@@ -315,6 +326,46 @@ export async function GET(request) {
       quality: chosen.name,
     });
 
+    // ── Per-resolution quality bucket ────────────────────────────
+    // For the player's "Quality" menu we want one entry per resolution
+    // (2160p / 1080p / 720p / …) so the user can manually pick. We only
+    // consider candidates we already probed-OK above (no extra probe
+    // latency) and we keep the highest-scored leader per resolution
+    // (`candidates` is sorted by score, so first-seen-per-bucket wins).
+    // When the bucket leader is the same RD source as `chosen` we reuse
+    // its HLS session URL — creating a second session for the same source
+    // would just be a wasted /tmp dir.
+    const qualityByRes = {};
+    for (let i = 0; i < probes.length; i++) {
+      if (!probes[i].ok) continue;
+      const c = candidates[i];
+      const res = parseResolution(c.filename);
+      if (!res) continue;
+      if (qualityByRes[res]) continue;
+      qualityByRes[res] = c;
+    }
+    const qualities = RES_ORDER
+      .map((label) => {
+        const entry = qualityByRes[label];
+        if (!entry) return null;
+        const streamUrl = entry.url === chosen.url
+          ? hlsUrl
+          : buildHlsUrl(entry.url, {
+              filename: entry.filename,
+              sizeBytes: entry.sizeBytes,
+              quality: entry.name,
+            });
+        return {
+          label,
+          streamUrl,
+          streamType: 'hls',
+          sizeBytes: entry.sizeBytes,
+          filename: entry.filename || entry.name,
+        };
+      })
+      .filter(Boolean)
+      .slice(0, 4);
+
     return NextResponse.json({
       success: true,
       streamUrl: hlsUrl,
@@ -324,6 +375,11 @@ export async function GET(request) {
       filename: chosen.filename || chosen.name,
       sizeBytes: chosen.sizeBytes,
       probedOk: chosenIdx >= 0,
+      // Per-resolution quality picker. ≤ 4 entries, sorted hi→lo. The
+      // player's settings menu lists these alongside an "Auto" option;
+      // when the user picks one, the player swaps src to the matching
+      // streamUrl (each is its own pre-built — lazy — HLS session).
+      qualities,
       // Pre-ranked alternates the client can rotate to if the top HLS
       // session fails for any reason (e.g., ffmpeg refused to demux this
       // particular source). Each alternate gets its own HLS session.
