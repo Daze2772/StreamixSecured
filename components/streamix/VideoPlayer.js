@@ -87,9 +87,10 @@ const VideoPlayer = ({
   const [popupBlock, setPopupBlock] = useState(initialBlock);
 
   // Premium (Real-Debrid) resolution state
-  // Shape: { state: 'idle'|'loading'|'ok'|'error', url, quality, title, error }
+  // Shape: { state: 'idle'|'loading'|'ok'|'error', url, quality, title, error, alternates, altIndex }
   const [premium, setPremium] = useState({
     state: 'idle', url: null, quality: null, title: null, error: null,
+    alternates: [], altIndex: 0,
   });
   const premiumCacheRef = useRef(new Map());
 
@@ -172,7 +173,7 @@ const VideoPlayer = ({
   // ────────────────────────────────────────────────────────────
   useEffect(() => {
     if (!activeServer.isPremium) {
-      setPremium((p) => (p.state === 'idle' ? p : { state: 'idle', url: null, quality: null, title: null, error: null }));
+      setPremium((p) => (p.state === 'idle' ? p : { state: 'idle', url: null, quality: null, title: null, error: null, alternates: [], altIndex: 0 }));
       return;
     }
     if (!playerActive || showTrailer) return;
@@ -180,7 +181,7 @@ const VideoPlayer = ({
     const cacheKey = `${mediaType}:${tmdbId}:${season}:${episode}`;
     const hit = premiumCacheRef.current.get(cacheKey);
     if (hit) {
-      setPremium({ state: 'ok', ...hit, error: null });
+      setPremium({ state: 'ok', ...hit, error: null, altIndex: 0 });
       updateStatus(serverIdx, STATUS.OK);
       return;
     }
@@ -189,24 +190,24 @@ const VideoPlayer = ({
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), PREMIUM_TIMEOUT_MS);
 
-    setPremium({ state: 'loading', url: null, quality: null, title: null, error: null });
+    setPremium({ state: 'loading', url: null, quality: null, title: null, error: null, alternates: [], altIndex: 0 });
     updateStatus(serverIdx, STATUS.LOADING);
     setToast(null);
 
     // Determine which premium API to use based on server config
     const server = STREAMING_SERVERS[serverIdx];
     const premiumType = server?.premiumType || 'realdebrid';
-    
+
     console.log(`[Premium] Using ${premiumType} for ${server?.name}`);
 
     // AllDebrid: Use client-side resolver (avoids server IP block)
     if (premiumType === 'alldebrid') {
       clearTimeout(timeoutId); // Clear default timeout for client-side resolver
-      
+
       const adApiKey = process.env.NEXT_PUBLIC_ALLDEBRID_API_KEY || 'FD4JV2CEL0GEGMFPItVdl3UT';
-      const cometManifestUrl = process.env.NEXT_PUBLIC_RD_ADDON_MANIFEST_URL || 
+      const cometManifestUrl = process.env.NEXT_PUBLIC_RD_ADDON_MANIFEST_URL ||
                                'https://comet.elfhosted.com/eyJtYXhSZXN1bHRzUGVyUmVzb2x1dGlvbiI6MCwibWF4U2l6ZSI6MCwiY2FjaGVkT25seSI6ZmFsc2UsInNvcnRDYWNoZWRVbmNhY2hlZFRvZ2V0aGVyIjpmYWxzZSwicmVtb3ZlVHJhc2giOnRydWUsInJlc3VsdEZvcm1hdCI6WyJhbGwiXSwiZGVicmlkU2VydmljZXMiOlt7InNlcnZpY2UiOiJyZWFsZGVicmlkIiwiYXBpS2V5IjoiUUdUQ1ZWSFBJN0xEVzRZVUlaU1FXNU9CNkc2QlBEQk9ZUldWS0FZTVhOQlRBQ080NE5EQSJ9XSwiZW5hYmxlVG9ycmVudCI6ZmFsc2UsImRlZHVwbGljYXRlU3RyZWFtcyI6ZmFsc2UsInNjcmFwZURlYnJpZEFjY291bnRUb3JyZW50cyI6ZmFsc2UsImRlYnJpZlN0cmVhbVByb3h5UGFzc3dvcmQiOiIiLCJsYW5ndWFnZXMiOnsicmVxdWlyZWQiOltdLCJhbGxvd2VkIjpbXSwiZXhjbHVkZSI6W10sInByZWZlcnJlZCI6W119LCJyZXNvbHV0aW9ucyI6e30sIm9wdGlvbnMiOnsicmVtb3ZlX3JhbmtzX3VuZGVyIjotMTAwMDAwMDAwMDAsImFsbG93X2VuZ2xpc2hfaW5fbGFuZ3VhZ2VzIjpmYWxzZSwicmVtb3ZlX3Vua25vd25fbGFuZ3VhZ2VzIjpmYWxzZX19/manifest.json';
-      
+
       console.log('[Premium AD] API Key:', adApiKey ? 'SET' : 'MISSING');
       console.log('[Premium AD] Comet URL:', cometManifestUrl ? 'SET' : 'MISSING');
 
@@ -224,27 +225,28 @@ const VideoPlayer = ({
             url: data.streamUrl,
             quality: data.quality || data.filename,
             title: data.filename || '',
+            alternates: [],
           };
           premiumCacheRef.current.set(cacheKey, payload);
-          setPremium({ state: 'ok', ...payload, error: null });
+          setPremium({ state: 'ok', ...payload, error: null, altIndex: 0 });
           updateStatus(serverIdx, STATUS.OK);
         })
         .catch(err => {
           if (cancelled) return;
           console.error(`[Premium AD] Error:`, err);
-          setPremium({ state: 'error', url: null, quality: null, title: null, error: err.message });
+          setPremium({ state: 'error', url: null, quality: null, title: null, error: err.message, alternates: [], altIndex: 0 });
           updateStatus(serverIdx, STATUS.FAILED);
           triedAutoSwitchRef.current.add(serverIdx);
           setToast({ kind: 'error', msg: `AllDebrid: ${err.message}` });
           setTimeout(() => tryNextServer(), 1500);
         });
-      
+
       return () => { cancelled = true; };
     }
 
     // Real-Debrid: Use server-side API
     const apiEndpoint = '/api/realdebrid/resolve';
-    
+
     const params = new URLSearchParams({ type: mediaType });
     if (imdbId) params.set('imdb', imdbId);
     if (tmdbId) params.set('tmdb', String(tmdbId));
@@ -264,9 +266,10 @@ const VideoPlayer = ({
           url: data.streamUrl,
           quality: data.quality || data.filename,
           title: data.filename || '',
+          alternates: Array.isArray(data.alternates) ? data.alternates : [],
         };
         premiumCacheRef.current.set(cacheKey, payload);
-        setPremium({ state: 'ok', ...payload, error: null });
+        setPremium({ state: 'ok', ...payload, error: null, altIndex: 0 });
         updateStatus(serverIdx, STATUS.OK);
       })
       .catch((e) => {
@@ -274,7 +277,7 @@ const VideoPlayer = ({
         const msg = e.name === 'AbortError'
           ? 'Premium resolution timed out.'
           : (e.message || 'Premium resolution failed.');
-        setPremium({ state: 'error', url: null, quality: null, title: null, error: msg });
+        setPremium({ state: 'error', url: null, quality: null, title: null, error: msg, alternates: [], altIndex: 0 });
         updateStatus(serverIdx, STATUS.FAILED);
         triedAutoSwitchRef.current.add(serverIdx);
         setToast({
@@ -442,6 +445,29 @@ const VideoPlayer = ({
                 className="w-full h-full object-contain bg-black"
                 onCanPlay={() => updateStatus(serverIdx, STATUS.OK)}
                 onError={() => {
+                  // Try next alternate from the resolver before failing over
+                  // to a different server. Many "best" RD picks turn out to
+                  // have unexpected codecs / dead mirrors — alternates are
+                  // already pre-ranked by browser playability.
+                  const alts = premium.alternates || [];
+                  const nextAlt = premium.altIndex + 1;
+                  if (nextAlt - 1 < alts.length) {
+                    const a = alts[nextAlt - 1];
+                    console.log(`[Premium] Primary failed, trying alternate #${nextAlt}: ${a.filename}`);
+                    setToast({
+                      kind: 'warn',
+                      msg: `Primary stream failed, trying alternate #${nextAlt}…`,
+                    });
+                    setPremium((prev) => ({
+                      ...prev,
+                      url: a.streamUrl,
+                      quality: a.quality || a.filename,
+                      title: a.filename || '',
+                      altIndex: nextAlt,
+                    }));
+                    return;
+                  }
+                  // Out of alternates — fall back to a different server
                   updateStatus(serverIdx, STATUS.FAILED);
                   triedAutoSwitchRef.current.add(serverIdx);
                   setToast({ kind: 'error', msg: 'Premium stream playback failed — trying next server…' });
