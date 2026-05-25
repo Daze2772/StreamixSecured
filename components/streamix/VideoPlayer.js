@@ -88,10 +88,16 @@ const VideoPlayer = ({
   const [popupBlock, setPopupBlock] = useState(initialBlock);
 
   // Premium (Real-Debrid) resolution state
-  // Shape: { state: 'idle'|'loading'|'ok'|'error', url, quality, title, error, alternates, altIndex }
+  // Shape: { state: 'idle'|'loading'|'ok'|'error', url, quality, title, error,
+  //          alternates, altIndex, qualities }
+  // - `qualities` is the per-resolution picker list from the resolver
+  //   (≤4 entries, sorted hi→lo). Passed straight to HlsVideo as
+  //   `qualityOptions`. Empty array when the resolver couldn't probe any
+  //   candidates, or for the AllDebrid client-side path (which doesn't
+  //   return a quality menu).
   const [premium, setPremium] = useState({
     state: 'idle', url: null, quality: null, title: null, error: null,
-    alternates: [], altIndex: 0,
+    alternates: [], altIndex: 0, qualities: [],
   });
   const premiumCacheRef = useRef(new Map());
 
@@ -174,7 +180,7 @@ const VideoPlayer = ({
   // ────────────────────────────────────────────────────────────
   useEffect(() => {
     if (!activeServer.isPremium) {
-      setPremium((p) => (p.state === 'idle' ? p : { state: 'idle', url: null, quality: null, title: null, error: null, alternates: [], altIndex: 0 }));
+      setPremium((p) => (p.state === 'idle' ? p : { state: 'idle', url: null, quality: null, title: null, error: null, alternates: [], altIndex: 0, qualities: [] }));
       return;
     }
     if (!playerActive || showTrailer) return;
@@ -191,7 +197,7 @@ const VideoPlayer = ({
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), PREMIUM_TIMEOUT_MS);
 
-    setPremium({ state: 'loading', url: null, quality: null, title: null, error: null, alternates: [], altIndex: 0 });
+    setPremium({ state: 'loading', url: null, quality: null, title: null, error: null, alternates: [], altIndex: 0, qualities: [] });
     updateStatus(serverIdx, STATUS.LOADING);
     setToast(null);
 
@@ -226,6 +232,7 @@ const VideoPlayer = ({
             quality: data.quality || data.filename,
             title: data.filename || '',
             alternates: [],
+            qualities: [],
           };
           premiumCacheRef.current.set(cacheKey, payload);
           setPremium({ state: 'ok', ...payload, error: null, altIndex: 0 });
@@ -234,7 +241,7 @@ const VideoPlayer = ({
         .catch(err => {
           if (cancelled) return;
           console.error(`[Premium AD] Error:`, err);
-          setPremium({ state: 'error', url: null, quality: null, title: null, error: err.message, alternates: [], altIndex: 0 });
+          setPremium({ state: 'error', url: null, quality: null, title: null, error: err.message, alternates: [], altIndex: 0, qualities: [] });
           updateStatus(serverIdx, STATUS.FAILED);
           triedAutoSwitchRef.current.add(serverIdx);
           setToast({ kind: 'error', msg: `AllDebrid: ${err.message}` });
@@ -267,6 +274,7 @@ const VideoPlayer = ({
           quality: data.quality || data.filename,
           title: data.filename || '',
           alternates: Array.isArray(data.alternates) ? data.alternates : [],
+          qualities: Array.isArray(data.qualities) ? data.qualities : [],
         };
         premiumCacheRef.current.set(cacheKey, payload);
         setPremium({ state: 'ok', ...payload, error: null, altIndex: 0 });
@@ -277,7 +285,7 @@ const VideoPlayer = ({
         const msg = e.name === 'AbortError'
           ? 'Premium resolution timed out.'
           : (e.message || 'Premium resolution failed.');
-        setPremium({ state: 'error', url: null, quality: null, title: null, error: msg, alternates: [], altIndex: 0 });
+        setPremium({ state: 'error', url: null, quality: null, title: null, error: msg, alternates: [], altIndex: 0, qualities: [] });
         updateStatus(serverIdx, STATUS.FAILED);
         triedAutoSwitchRef.current.add(serverIdx);
         setToast({
@@ -342,7 +350,7 @@ const VideoPlayer = ({
     if (activeServer.isPremium) {
       const cacheKey = `${mediaType}:${tmdbId}:${season}:${episode}`;
       premiumCacheRef.current.delete(cacheKey);
-      setPremium({ state: 'idle', url: null, quality: null, title: null, error: null });
+      setPremium({ state: 'idle', url: null, quality: null, title: null, error: null, qualities: [] });
     }
     setIframeKey((k) => k + 1);
   };
@@ -433,13 +441,29 @@ const VideoPlayer = ({
               />
             )}
 
-            {/* PREMIUM (Real-Debrid → HLS via ffmpeg) — codec-universal */}
+            {/* PREMIUM (Real-Debrid → HLS via ffmpeg) — codec-universal.
+                Note: `${premium.url}` deliberately NOT in the key so that
+                in-place src swaps (quality picker, fatal-fallback alternate
+                rotation) DON'T remount HlsVideo. The hls.js effect inside
+                HlsVideo handles src changes cleanly and preserves the
+                playback position across the swap. iframeKey is still in the
+                key because reload/server-change should fully remount. */}
             {playerActive && !showTrailer && isPremiumActive && premium.state === 'ok' && premium.url && (
               <HlsVideo
-                key={`premium-${iframeKey}-${premium.url}`}
+                key={`premium-${iframeKey}`}
                 src={premium.url}
                 poster={poster || undefined}
                 className="w-full h-full object-contain bg-black"
+                qualityLabel={premium.quality || 'Source · 1080p'}
+                qualityOptions={premium.qualities || []}
+                onQualityChange={(label, url) => {
+                  // The picker (or its 10s safety revert) is asking us to
+                  // swap the source. We only update `url` — quality label
+                  // on the action bar continues to reflect the resolver's
+                  // original primary pick, which is intentional (it's a
+                  // brand mark, not a live indicator).
+                  setPremium((p) => ({ ...p, url }));
+                }}
                 onReady={() => updateStatus(serverIdx, STATUS.OK)}
                 onFatal={() => {
                   // The HLS player gave up. Try alternates (each its own
