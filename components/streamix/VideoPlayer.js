@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { STREAMING_SERVERS, getEmbedUrl } from '@/lib/streaming';
 import { resolveAllDebrid } from '@/lib/alldebrid-client';
+import HlsVideo from '@/components/streamix/HlsVideo';
 import {
   Server, AlertCircle, RotateCw, Loader2,
   CheckCircle2, XCircle, Circle, Youtube, ChevronRight, Play, Shield, ShieldOff,
@@ -433,22 +434,18 @@ const VideoPlayer = ({
               />
             )}
 
-            {/* PREMIUM (Real-Debrid) — direct video from RD API */}
+            {/* PREMIUM (Real-Debrid → HLS via ffmpeg) — codec-universal */}
             {playerActive && !showTrailer && isPremiumActive && premium.state === 'ok' && premium.url && (
-              <video
+              <HlsVideo
                 key={`premium-${iframeKey}-${premium.url}`}
                 src={premium.url}
-                controls
-                autoPlay
-                playsInline
                 poster={poster || undefined}
                 className="w-full h-full object-contain bg-black"
-                onCanPlay={() => updateStatus(serverIdx, STATUS.OK)}
-                onError={() => {
-                  // Try next alternate from the resolver before failing over
-                  // to a different server. Many "best" RD picks turn out to
-                  // have unexpected codecs / dead mirrors — alternates are
-                  // already pre-ranked by browser playability.
+                onReady={() => updateStatus(serverIdx, STATUS.OK)}
+                onFatal={() => {
+                  // The HLS player gave up. Try alternates (each its own
+                  // pre-built HLS session) before falling back to a
+                  // different streaming server.
                   const alts = premium.alternates || [];
                   const nextAlt = premium.altIndex + 1;
                   if (nextAlt - 1 < alts.length) {
@@ -467,7 +464,6 @@ const VideoPlayer = ({
                     }));
                     return;
                   }
-                  // Out of alternates — fall back to a different server
                   updateStatus(serverIdx, STATUS.FAILED);
                   triedAutoSwitchRef.current.add(serverIdx);
                   setToast({ kind: 'error', msg: 'Premium stream playback failed — trying next server…' });

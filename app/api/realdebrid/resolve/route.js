@@ -1,29 +1,23 @@
 import { NextResponse } from 'next/server';
+import { createSession } from '@/lib/hls-sessions';
 
 /**
- * Real-Debrid resolver — Comet edition, browser-playback aware.
+ * Real-Debrid resolver — Comet edition, HLS delivery.
  *
- * We delegate scraping + RD-unrestrict to the Comet Stremio addon hosted by
- * ElfHosted (config baked into RD_ADDON_MANIFEST_URL — see .env). Comet
- * returns a /playback/<token>/...long.../ URL which 302-redirects to a
- * direct Real-Debrid download URL.
+ * We delegate scraping + RD-unrestrict to the Comet Stremio addon (config
+ * baked into RD_ADDON_MANIFEST_URL — see .env). Comet returns a
+ * /playback/<token>/... URL that 302-redirects to a real-debrid.com CDN URL.
  *
- * Two important quirks we handle here:
+ * Delivery rewrite (June 2025): the old "<video src='/api/stream/proxy?...'>"
+ * approach failed for too many RD files because RD ships a wild variety of
+ * codecs (Hi10P H.264, HEVC, DTS audio, etc.) that no browser can natively
+ * decode. We now hand the RD URL to ffmpeg and stream HLS — every browser
+ * plays HLS via Media Source Extensions / hls.js, regardless of the
+ * source's codec. See /app/lib/hls-sessions.js.
  *
- *  1. RD serves files with `Content-Type: application/force-download` and
- *     `Content-Disposition: attachment` — the browser refuses to inline-play
- *     them in <video>. We wrap the URL through /api/stream/proxy which
- *     strips those headers and sets a real video MIME.
- *
- *  2. Most "best" torrent files are 30–100 GB MKV REMUX with HEVC + DTS-HD
- *     audio — browsers can't play HEVC at all (Safari only) and *never*
- *     play DTS/TrueHD/Atmos. We aggressively re-rank to prefer:
- *        .mp4 container >> .mkv
- *        H.264 (AVC / x264) >> HEVC / H.265 / x265
- *        AAC / AC3 / MP3 audio >> DTS / TrueHD / Atmos
- *        Reasonable size (1–8 GB) >> 50 GB REMUX
- *
- * The goal isn't the best PICTURE — it's the best stream that ACTUALLY PLAYS.
+ * Ranker still prefers cached + browser-friendly files because that lets
+ * ffmpeg use stream-copy (cheap) instead of re-encoding. But the playback
+ * is no longer codec-fragile.
  */
 
 const RD_ADDON_MANIFEST_URL = process.env.RD_ADDON_MANIFEST_URL;
@@ -103,14 +97,10 @@ function rankStream(filename, sizeBytes, name = '') {
   return score;
 }
 
-/** Wrap an upstream stream URL through our proxy so the browser plays it inline. */
-function buildProxyUrl(streamUrl, filename, request) {
-  const ext = (() => {
-    const m = (filename || '').toLowerCase().match(/\.([a-z0-9]{2,5})$/);
-    return m ? m[1] : 'mp4';
-  })();
-  // Use a relative URL so it works regardless of host/port
-  return `/api/stream/proxy?ext=${encodeURIComponent(ext)}&url=${encodeURIComponent(streamUrl)}`;
+/** Create an HLS session and return its playlist URL for the browser. */
+function buildHlsUrl(sourceUrl, meta = {}) {
+  const session = createSession(sourceUrl, meta);
+  return `/api/stream/hls/${session.id}/index.m3u8`;
 }
 
 export async function GET(request) {
@@ -302,21 +292,31 @@ export async function GET(request) {
       if (!validatedIdx.has(i)) alternates.push(candidates[i]);
     }
 
-    // Build a proxied URL so the browser plays it inline (no force-download).
-    const proxiedUrl = buildProxyUrl(chosen.url, chosen.filename, request);
+    // Build an HLS playlist URL so the browser plays via hls.js — works for
+    // every codec the source might have (we transcode if needed).
+    const hlsUrl = buildHlsUrl(chosen.url, {
+      filename: chosen.filename,
+      sizeBytes: chosen.sizeBytes,
+      quality: chosen.name,
+    });
 
     return NextResponse.json({
       success: true,
-      streamUrl: proxiedUrl,
-      directUrl: chosen.url, // kept for debugging / direct-link fallback
+      streamUrl: hlsUrl,
+      streamType: 'hls',
+      directUrl: chosen.url,                 // for debugging
       quality: chosen.name.slice(0, 100),
       filename: chosen.filename || chosen.name,
       sizeBytes: chosen.sizeBytes,
       probedOk: chosenIdx >= 0,
-      // Pre-ranked browser-friendly alternates the client can rotate to if
-      // the top pick fails playback (e.g. unexpected codec / dead mirror).
+      // Pre-ranked alternates the client can rotate to if the top HLS
+      // session fails for any reason (e.g., ffmpeg refused to demux this
+      // particular source). Each alternate gets its own HLS session.
       alternates: alternates.slice(0, 5).map((s) => ({
-        streamUrl: buildProxyUrl(s.url, s.filename, request),
+        streamUrl: buildHlsUrl(s.url, {
+          filename: s.filename, sizeBytes: s.sizeBytes, quality: s.name,
+        }),
+        streamType: 'hls',
         directUrl: s.url,
         filename: s.filename || s.name,
         quality: s.name,
