@@ -44,6 +44,50 @@ const formatTime = (sec) => {
 
 const SPEEDS = [0.5, 0.75, 1.0, 1.25, 1.5, 2.0];
 
+const RES_ORDER = ['2160p', '1080p', '720p', '480p', '360p'];
+
+// 10-second safety net on a user-initiated quality swap. If loadedmetadata
+// hasn't fired by then (dead RD link, ffmpeg refused to demux, network
+// hang), we surface a toast and revert the player to the previous src.
+const SWITCH_TIMEOUT_MS = 10_000;
+
+// Format byte counts for the quality menu ("1.85 GB", "812 MB"). Falsy / 0
+// returns '' so the row just shows the label.
+const formatSize = (bytes) => {
+  if (!bytes || bytes <= 0) return '';
+  const gb = bytes / (1024 ** 3);
+  if (gb >= 1) return `${gb.toFixed(2)} GB`;
+  const mb = bytes / (1024 ** 2);
+  return `${Math.round(mb)} MB`;
+};
+
+// Pick the best quality label for "Auto" mode using navigator.connection.downlink
+// (Mbps). Falls back to '1080p' when the API is unavailable (Safari/Firefox).
+// Returns the label of the highest available quality at-or-below the
+// preferred tier, or the highest available overall if nothing is at-or-below.
+const pickAutoQualityLabel = (qualityOptions) => {
+  if (!qualityOptions || !qualityOptions.length) return null;
+  const dl = (typeof navigator !== 'undefined' && navigator.connection && navigator.connection.downlink) || null;
+  let preferred;
+  if (dl == null) preferred = '1080p';
+  else if (dl >= 25) preferred = '2160p';
+  else if (dl >= 5)  preferred = '1080p';
+  else if (dl >= 2)  preferred = '720p';
+  else               preferred = '480p';
+
+  const have = new Set(qualityOptions.map((q) => q.label));
+  const startIdx = RES_ORDER.indexOf(preferred);
+  // Walk down from `preferred` toward lower resolutions; return first match.
+  for (let i = Math.max(0, startIdx); i < RES_ORDER.length; i++) {
+    if (have.has(RES_ORDER[i])) return RES_ORDER[i];
+  }
+  // Nothing at-or-below preferred — fall back to the highest available.
+  for (let i = 0; i < RES_ORDER.length; i++) {
+    if (have.has(RES_ORDER[i])) return RES_ORDER[i];
+  }
+  return qualityOptions[0].label;
+};
+
 export default function HlsVideo({
   src,
   poster,
@@ -52,6 +96,15 @@ export default function HlsVideo({
   onFatal,
   autoPlay = true,
   qualityLabel = 'Source · 1080p',
+  // ── Multi-quality picker (Phase B) ────────────────────────────
+  // qualityOptions: [{ label, streamUrl, sizeBytes, filename }] — when
+  // present and non-empty, the settings menu shows an Auto row + one row
+  // per option. Picking a row calls onQualityChange(label, streamUrl);
+  // the parent updates its `src` prop, which this component swaps in-place
+  // while preserving the current playback position + play state. When
+  // null/empty, the legacy "Source · 1080p" single-quality block renders.
+  qualityOptions = null,
+  onQualityChange = null,
 }) {
   const videoRef = useRef(null);
   const wrapRef = useRef(null);
@@ -62,8 +115,37 @@ export default function HlsVideo({
   // ── Latest-callback refs (so the hls effect doesn't re-run on parent re-render)
   const onReadyRef = useRef(onReady);
   const onFatalRef = useRef(onFatal);
+  const onQualityChangeRef = useRef(onQualityChange);
   useEffect(() => { onReadyRef.current = onReady; }, [onReady]);
   useEffect(() => { onFatalRef.current = onFatal; }, [onFatal]);
+  useEffect(() => { onQualityChangeRef.current = onQualityChange; }, [onQualityChange]);
+
+  // ── Quality swap state ───────────────────────────────────────
+  // pendingSeekRef:  pre-swap currentTime captured in the hls-effect cleanup
+  //                  before video.load() resets it to 0. Restored on the
+  //                  next loadedmetadata.
+  // pendingPlayRef:  whether playback was active pre-swap (so we resume).
+  // prevSrcRef:      previous src value, to distinguish first-mount from
+  //                  an in-place swap.
+  // swapStartRef:    {label, prevUrl, prevLabel} captured at the moment the
+  //                  user clicked a quality row. Presence of this ref at
+  //                  the time of an src change is what marks the swap as
+  //                  user-initiated (vs parent-initiated, e.g. the
+  //                  fatal-fallback alternates rotation in VideoPlayer).
+  // switchTimerRef:  10s safety net handle.
+  // revertingRef:    set true while the safety-revert is in flight so the
+  //                  resulting src change doesn't re-trigger the overlay.
+  const pendingSeekRef = useRef(null);
+  const pendingPlayRef = useRef(false);
+  const prevSrcRef = useRef(null);
+  const swapStartRef = useRef(null);
+  const switchTimerRef = useRef(null);
+  const revertingRef = useRef(false);
+  const switchToastTimerRef = useRef(null);
+
+  const [isSwitching, setIsSwitching] = useState(false);
+  const [switchTargetLabel, setSwitchTargetLabel] = useState(null);
+  const [switchToast, setSwitchToast] = useState(null);
 
   // ── Player UI state
   const [isPlaying, setIsPlaying] = useState(false);
@@ -291,6 +373,32 @@ export default function HlsVideo({
     const onPause = () => { setIsPlaying(false); setControlsVisible(true); };
     const onTimeUpdate = () => setCurrentTime(v.currentTime || 0);
     const onDurationChange = () => setDuration(v.duration || 0);
+    // loadedmetadata = new source is fully parsed, duration is known, and
+    // we can safely seek. This is also where we close the "Switching to X…"
+    // overlay (if any) and restore the pre-swap playback position +
+    // play state captured by the hls-effect's cleanup.
+    const onLoadedMetadata = () => {
+      setDuration(v.duration || 0);
+      const seek = pendingSeekRef.current;
+      const wasPlaying = pendingPlayRef.current;
+      pendingSeekRef.current = null;
+      pendingPlayRef.current = false;
+      if (seek != null && seek > 0.5 && isFinite(v.duration) && v.duration > 0) {
+        try {
+          v.currentTime = Math.min(seek, Math.max(0, v.duration - 0.5));
+        } catch (_) {}
+        if (wasPlaying) {
+          v.play().catch(() => {});
+        }
+      }
+      // Swap completed before the 10s safety net fired — clear it.
+      if (switchTimerRef.current) {
+        clearTimeout(switchTimerRef.current);
+        switchTimerRef.current = null;
+      }
+      setIsSwitching(false);
+      setSwitchTargetLabel(null);
+    };
     const onVolumeChange = () => { setVolume(v.volume); setMuted(v.muted); };
     const onRateChange = () => setPlaybackRate(v.playbackRate);
     const onProgress = () => {
@@ -309,7 +417,7 @@ export default function HlsVideo({
     v.addEventListener('pause', onPause);
     v.addEventListener('timeupdate', onTimeUpdate);
     v.addEventListener('durationchange', onDurationChange);
-    v.addEventListener('loadedmetadata', onDurationChange);
+    v.addEventListener('loadedmetadata', onLoadedMetadata);
     v.addEventListener('volumechange', onVolumeChange);
     v.addEventListener('ratechange', onRateChange);
     v.addEventListener('progress', onProgress);
@@ -324,7 +432,7 @@ export default function HlsVideo({
       v.removeEventListener('pause', onPause);
       v.removeEventListener('timeupdate', onTimeUpdate);
       v.removeEventListener('durationchange', onDurationChange);
-      v.removeEventListener('loadedmetadata', onDurationChange);
+      v.removeEventListener('loadedmetadata', onLoadedMetadata);
       v.removeEventListener('volumechange', onVolumeChange);
       v.removeEventListener('ratechange', onRateChange);
       v.removeEventListener('progress', onProgress);
@@ -342,6 +450,117 @@ export default function HlsVideo({
     document.addEventListener('fullscreenchange', onChange);
     return () => document.removeEventListener('fullscreenchange', onChange);
   }, []);
+
+  // ─────────────────────────────────────────────────────────
+  // Quality swap detection — runs whenever the `src` prop changes.
+  // Three cases to handle:
+  //   1. First mount: prevSrcRef is null → nothing to do, just remember src.
+  //   2. User-initiated swap: handlePickQuality set swapStartRef before
+  //      calling onQualityChange. We show the "Switching to X…" overlay
+  //      and start a 10s safety timer that reverts via onQualityChange.
+  //   3. Parent-initiated swap (e.g., VideoPlayer's fatal-fallback rotates
+  //      to an alternate): swapStartRef is null. Show the overlay but
+  //      DON'T arm the safety revert — the parent owns that flow.
+  //   4. Safety-revert in flight: revertingRef short-circuits the overlay
+  //      so the user sees only the toast, not "Switching… Switching…".
+  // ─────────────────────────────────────────────────────────
+  useEffect(() => {
+    if (prevSrcRef.current && prevSrcRef.current !== src) {
+      if (revertingRef.current) {
+        revertingRef.current = false;
+        prevSrcRef.current = src;
+        return;
+      }
+      setIsSwitching(true);
+      const pending = swapStartRef.current;
+      swapStartRef.current = null;
+      if (pending) {
+        // User-initiated. Arm 10s safety net.
+        if (switchTimerRef.current) clearTimeout(switchTimerRef.current);
+        switchTimerRef.current = setTimeout(() => {
+          switchTimerRef.current = null;
+          // Failure path: revert via parent, hide overlay, surface toast.
+          setIsSwitching(false);
+          setSwitchTargetLabel(null);
+          const failedLabel = pending.label || 'new quality';
+          const prevLabel = pending.prevLabel || 'current quality';
+          showSwitchToast(`Couldn't switch to ${failedLabel} — staying on ${prevLabel}.`);
+          if (pending.prevUrl && onQualityChangeRef.current) {
+            revertingRef.current = true;
+            onQualityChangeRef.current(pending.prevLabel, pending.prevUrl);
+          }
+        }, SWITCH_TIMEOUT_MS);
+      } else {
+        // Parent-initiated swap (no target label known to us). The overlay
+        // still helps because the user is staring at a blank black square
+        // for a few seconds while ffmpeg cold-starts on the new source.
+        setSwitchTargetLabel(null);
+      }
+    }
+    prevSrcRef.current = src;
+  }, [src]);
+
+  // Unmount-time cleanup for switch-related timers (the loadedmetadata
+  // handler clears the safety timer on success; this catches teardown).
+  useEffect(() => () => {
+    if (switchTimerRef.current) clearTimeout(switchTimerRef.current);
+    if (switchToastTimerRef.current) clearTimeout(switchToastTimerRef.current);
+  }, []);
+
+  // ─────────────────────────────────────────────────────────
+  // Derived quality-menu state — fully derived from props + src so we
+  // can't drift out of sync with the parent's source-of-truth.
+  // ─────────────────────────────────────────────────────────
+  const activeQualityLabel = useMemo(() => {
+    if (!qualityOptions || !qualityOptions.length) return null;
+    const match = qualityOptions.find((q) => q.streamUrl === src);
+    // src isn't in our option list ⇒ user is on the resolver's primary
+    // (or an unlisted alternate). Display "Auto" as the active selection.
+    return match ? match.label : 'Auto';
+  }, [qualityOptions, src]);
+
+  const autoTargetLabel = useMemo(
+    () => pickAutoQualityLabel(qualityOptions),
+    [qualityOptions],
+  );
+
+  // Briefly show a toast (auto-dismiss after 4s).
+  const showSwitchToast = useCallback((msg) => {
+    setSwitchToast(msg);
+    if (switchToastTimerRef.current) clearTimeout(switchToastTimerRef.current);
+    switchToastTimerRef.current = setTimeout(() => {
+      setSwitchToast(null);
+      switchToastTimerRef.current = null;
+    }, 4000);
+  }, []);
+
+  // User clicked a row in the Quality submenu. Computes the target URL,
+  // stashes pre-swap state for revert, closes the menu, and asks the
+  // parent to swap `src`. The actual swap is observed by the src-change
+  // effect above.
+  const handlePickQuality = useCallback((label) => {
+    if (!qualityOptions || !qualityOptions.length) return;
+    let target;
+    if (label === 'Auto') {
+      const autoLabel = pickAutoQualityLabel(qualityOptions);
+      target = qualityOptions.find((q) => q.label === autoLabel);
+      if (!target) return;
+    } else {
+      target = qualityOptions.find((q) => q.label === label);
+      if (!target) return;
+    }
+    setSettingsOpen(false);
+    if (target.streamUrl === src) return; // no-op pick — already on this
+    swapStartRef.current = {
+      label,                       // what the user clicked (incl. 'Auto')
+      prevUrl: src,                // for revert on safety-timer fire
+      prevLabel: activeQualityLabel,
+    };
+    setSwitchTargetLabel(label === 'Auto' ? `Auto · ${target.label}` : label);
+    if (onQualityChangeRef.current) {
+      onQualityChangeRef.current(label, target.streamUrl);
+    }
+  }, [qualityOptions, src, activeQualityLabel]);
 
   // ─────────────────────────────────────────────────────────
   // hls.js lifecycle (UNCHANGED — playback engine)
@@ -431,6 +650,18 @@ export default function HlsVideo({
 
     return () => {
       disposed = true;
+      // ── Capture playback position BEFORE we destroy the player ────
+      // video.load() (a few lines down) resets currentTime to 0, so if we
+      // want to restore it on the next mount (e.g., for a quality swap)
+      // we must snapshot it first. pendingSeekRef is read by the
+      // loadedmetadata handler once the new source is ready.
+      try {
+        const v = videoRef.current;
+        if (v) {
+          pendingSeekRef.current = v.currentTime || 0;
+          pendingPlayRef.current = !v.paused;
+        }
+      } catch (_) {}
       if (hls) { try { hls.destroy(); } catch (_) {} hlsRef.current = null; }
       if (detachNative) detachNative();
       try { video.removeAttribute('src'); video.load(); } catch (_) {}
@@ -487,9 +718,36 @@ export default function HlsVideo({
       )}
 
       {/* Buffering spinner */}
-      {isBuffering && isPlaying && (
+      {isBuffering && isPlaying && !isSwitching && (
         <div aria-hidden className="pointer-events-none absolute inset-0 flex items-center justify-center z-10">
           <Loader2 size={56} className="text-white/90 animate-spin drop-shadow-2xl" />
+        </div>
+      )}
+
+      {/* Quality-swap overlay — shown while a src swap is in flight.
+          Suppresses the buffering spinner (above) to avoid double-spinners.
+          Cleared by onLoadedMetadata once the new source is parsed, or by
+          the 10s safety net if metadata never arrives. */}
+      {isSwitching && (
+        <div aria-hidden className="pointer-events-none absolute inset-0 flex items-center justify-center z-20 bg-black/50 backdrop-blur-sm">
+          <div className="flex items-center gap-3 px-5 py-3 rounded-lg bg-black/80 border border-white/10 text-white shadow-2xl">
+            <Loader2 size={22} className="animate-spin text-amber-300" />
+            <span className="text-sm font-medium">
+              {switchTargetLabel
+                ? `Switching to ${switchTargetLabel}…`
+                : 'Switching source…'}
+            </span>
+          </div>
+        </div>
+      )}
+
+      {/* Brief switch-failed toast (4s auto-dismiss) */}
+      {switchToast && (
+        <div
+          role="status"
+          className="absolute top-3 left-1/2 -translate-x-1/2 z-30 max-w-[90%] px-3 py-2 rounded-md bg-amber-900/85 backdrop-blur border border-amber-700/40 text-amber-100 text-xs shadow-lg"
+        >
+          {switchToast}
         </div>
       )}
 
@@ -624,7 +882,13 @@ export default function HlsVideo({
                         className="flex items-center justify-between w-full px-3 py-2 hover:bg-white/10 text-sm"
                       >
                         <span>Quality</span>
-                        <span className="opacity-60 text-xs truncate max-w-[140px]">{qualityLabel}</span>
+                        <span className="opacity-60 text-xs truncate max-w-[140px]">
+                          {qualityOptions && qualityOptions.length > 0
+                            ? (activeQualityLabel === 'Auto'
+                                ? (autoTargetLabel ? `Auto · ${autoTargetLabel}` : 'Auto')
+                                : activeQualityLabel)
+                            : qualityLabel}
+                        </span>
                       </button>
                     </div>
                   )}
@@ -658,13 +922,50 @@ export default function HlsVideo({
                       >
                         ← Back
                       </button>
-                      <div className="px-3 py-2 text-sm flex items-center">
-                        <Check size={14} className="mr-2" />
-                        {qualityLabel}
-                      </div>
-                      <div className="px-3 pb-2 pt-1 text-[11px] opacity-50 leading-snug">
-                        Multi-bitrate switching not available — this stream is transcoded on-the-fly at a single quality.
-                      </div>
+                      {qualityOptions && qualityOptions.length > 0 ? (
+                        <>
+                          {/* Auto row */}
+                          <button
+                            onClick={() => handlePickQuality('Auto')}
+                            className={`flex items-center w-full px-3 py-2 hover:bg-white/10 text-sm ${activeQualityLabel === 'Auto' ? 'bg-white/5' : ''}`}
+                          >
+                            <span className="w-5">
+                              {activeQualityLabel === 'Auto' && <Check size={14} />}
+                            </span>
+                            <span className="flex-1 text-left">Auto</span>
+                            <span className="opacity-60 text-[11px]">
+                              {autoTargetLabel || ''}
+                            </span>
+                          </button>
+                          {/* Resolution rows */}
+                          {qualityOptions.map((q) => (
+                            <button
+                              key={q.label}
+                              onClick={() => handlePickQuality(q.label)}
+                              className={`flex items-center w-full px-3 py-2 hover:bg-white/10 text-sm ${activeQualityLabel === q.label ? 'bg-white/5' : ''}`}
+                              title={q.filename || ''}
+                            >
+                              <span className="w-5">
+                                {activeQualityLabel === q.label && <Check size={14} />}
+                              </span>
+                              <span className="flex-1 text-left">{q.label}</span>
+                              <span className="opacity-60 text-[11px] tabular-nums">
+                                {formatSize(q.sizeBytes)}
+                              </span>
+                            </button>
+                          ))}
+                        </>
+                      ) : (
+                        <>
+                          <div className="px-3 py-2 text-sm flex items-center">
+                            <Check size={14} className="mr-2" />
+                            {qualityLabel}
+                          </div>
+                          <div className="px-3 pb-2 pt-1 text-[11px] opacity-50 leading-snug">
+                            Multi-bitrate switching not available — this stream is transcoded on-the-fly at a single quality.
+                          </div>
+                        </>
+                      )}
                     </div>
                   )}
                 </div>

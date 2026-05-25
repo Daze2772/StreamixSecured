@@ -30,9 +30,20 @@ function getCometBase() {
 // Resolution tag we can pull from a release filename (e.g. "Fight.Club.1080p.BrRip.x264.mp4").
 // Returns the lowercased label ('1080p', '720p', …) or null when nothing matches —
 // in which case the candidate is simply omitted from the per-quality menu.
+//
+// Token rules:
+//   • px-style tokens (2160p/1080p/720p/480p/360p) need only a RIGHT word
+//     boundary, so "BD1080P", "WEB720p", "x1080p" are caught. Real-world
+//     false-positive risk is ~zero — no release naming scheme embeds the
+//     px-suffix inside a non-resolution word.
+//   • '4k' and 'uhd' (2160p synonyms) need BOTH boundaries because they
+//     can appear inside scene tags like "UHDTV" (not a resolution flag).
 function parseResolution(filename) {
-  const m = (filename || '').match(/\b(2160p|1080p|720p|480p|360p)\b/i);
-  return m ? m[1].toLowerCase() : null;
+  const m = (filename || '').match(/(2160p|1080p|720p|480p|360p|\b4k\b|\buhd\b)/i);
+  if (!m) return null;
+  const tok = m[1].toLowerCase();
+  if (tok === '4k' || tok === 'uhd') return '2160p';
+  return tok;
 }
 
 // High → low display order. Anything outside this list is skipped from the picker.
