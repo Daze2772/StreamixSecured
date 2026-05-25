@@ -1,32 +1,26 @@
 'use client';
 
-import { useEffect, useRef } from 'react';
+import { useEffect, useRef, useState, useCallback } from 'react';
 
 /**
  * HlsVideo
  * ========
- * <video> wrapper that plays an HLS playlist via hls.js — or, on browsers
- * with native HLS support (Safari, iOS), just sets the src directly.
+ * <video> wrapper that plays an HLS playlist via hls.js (Chrome/Firefox/
+ * Edge) or natively (Safari/iOS). Adds the kind of UX every modern
+ * streaming UI ships with:
  *
- * Designed for our Real-Debrid premium flow: the resolver returns
- * `/api/stream/hls/<session>/index.m3u8` and the server transcodes/remuxes
- * the upstream RD file with ffmpeg, so the source can be any codec the
- * torrent shipped with.
+ *   • Click anywhere on the picture → toggle play/pause
+ *   • Double-click → toggle fullscreen
+ *   • Brief play/pause icon flash so the click feels intentional
+ *   • Spacebar → toggle play/pause (when player has focus)
+ *   • ←/→ arrow keys → seek 5 s
+ *   • Native HTML5 controls remain visible for scrubbing/volume/etc.
  *
- * Props:
- *   src         playlist URL (.m3u8)
- *   poster      optional <video> poster
- *   className   passed to <video>
- *   onReady     fired when first frame has decoded (≈ canplay)
- *   onFatal     fired when hls.js or <video> can't recover (caller should
- *               fall back to alternates / next streaming server)
- *
- * Why a child component:
- *   - Keeps the hls.js dynamic import + lifecycle out of the giant
- *     VideoPlayer file.
- *   - Re-mounts cleanly when `src` changes (parent passes a new key).
- *   - Lazy-loads hls.js — adds ~200 KB only on premium playback.
+ * The whole thing is one component so VideoPlayer.js doesn't need to grow
+ * any wider. hls.js is dynamically imported (~200 KB) only when premium
+ * is selected, so the homepage bundle stays small.
  */
+
 export default function HlsVideo({
   src,
   poster,
@@ -37,22 +31,112 @@ export default function HlsVideo({
 }) {
   const videoRef = useRef(null);
   const hlsRef = useRef(null);
-  // Keep latest callbacks in refs so the effect doesn't re-run on every
-  // parent re-render.
+  const wrapRef = useRef(null);
+
+  // Latest-callback refs (effect doesn't re-run on every parent render)
   const onReadyRef = useRef(onReady);
   const onFatalRef = useRef(onFatal);
   useEffect(() => { onReadyRef.current = onReady; }, [onReady]);
   useEffect(() => { onFatalRef.current = onFatal; }, [onFatal]);
 
+  // Click-toggle UX: briefly flash a big icon when the user toggles
+  // play/pause via the picture. `flash` is the icon kind ('play'|'pause').
+  const [flash, setFlash] = useState(null);
+  const flashTimerRef = useRef(null);
+  const triggerFlash = useCallback((kind) => {
+    setFlash(kind);
+    if (flashTimerRef.current) clearTimeout(flashTimerRef.current);
+    flashTimerRef.current = setTimeout(() => setFlash(null), 600);
+  }, []);
+
+  // Defer/debounce single vs double click so a double-click doesn't also
+  // trigger a play/pause toggle.
+  const clickTimerRef = useRef(null);
+
+  const togglePlay = useCallback(() => {
+    const v = videoRef.current;
+    if (!v) return;
+    if (v.paused) {
+      v.play().then(() => triggerFlash('play')).catch(() => {});
+    } else {
+      v.pause();
+      triggerFlash('pause');
+    }
+  }, [triggerFlash]);
+
+  const toggleFullscreen = useCallback(() => {
+    const w = wrapRef.current;
+    if (!w) return;
+    if (document.fullscreenElement) {
+      document.exitFullscreen?.().catch(() => {});
+    } else {
+      (w.requestFullscreen?.() || Promise.resolve()).catch(() => {});
+    }
+  }, []);
+
+  // Single click → toggle play. Double click → fullscreen. We do this with
+  // a 230 ms timer so a true double-click cancels the play toggle.
+  const handleClick = useCallback((e) => {
+    // Ignore clicks that landed on the native browser controls. Most
+    // browsers route control clicks through the shadow DOM so e.target ===
+    // the <video> element when the user clicks the picture area, and ===
+    // the <video> too when they click on the control bar — but the
+    // browser handles the bar's clicks before our React handler runs, and
+    // we still get fired. Filter by bottom 60 px of the video frame: that
+    // strip is reserved for native controls.
+    const v = videoRef.current;
+    if (!v) return;
+    const rect = v.getBoundingClientRect();
+    const yFromBottom = rect.bottom - e.clientY;
+    if (yFromBottom <= 60) return;
+
+    if (clickTimerRef.current) {
+      // double-click: cancel pending play toggle, do fullscreen
+      clearTimeout(clickTimerRef.current);
+      clickTimerRef.current = null;
+      toggleFullscreen();
+      return;
+    }
+    clickTimerRef.current = setTimeout(() => {
+      clickTimerRef.current = null;
+      togglePlay();
+    }, 230);
+  }, [togglePlay, toggleFullscreen]);
+
+  // Keyboard shortcuts (Space, ←/→, F). Active only when the wrapper has
+  // focus, so it never fights other inputs on the page.
+  const handleKey = useCallback((e) => {
+    const v = videoRef.current;
+    if (!v) return;
+    if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
+    if (e.code === 'Space') {
+      e.preventDefault();
+      togglePlay();
+    } else if (e.code === 'ArrowRight') {
+      e.preventDefault();
+      v.currentTime = Math.min((v.duration || Infinity), v.currentTime + 5);
+    } else if (e.code === 'ArrowLeft') {
+      e.preventDefault();
+      v.currentTime = Math.max(0, v.currentTime - 5);
+    } else if (e.code === 'KeyF') {
+      e.preventDefault();
+      toggleFullscreen();
+    } else if (e.code === 'KeyM') {
+      e.preventDefault();
+      v.muted = !v.muted;
+    }
+  }, [togglePlay, toggleFullscreen]);
+
+  // ── HLS lifecycle ─────────────────────────────────────────────
   useEffect(() => {
     const video = videoRef.current;
     if (!video || !src) return;
 
     let disposed = false;
     let hls = null;
+    let detachNative = null;
 
     const attachNative = () => {
-      // Safari / iOS — native HLS support
       video.src = src;
       const onCanPlay = () => onReadyRef.current?.();
       const onErr = () => {
@@ -66,10 +150,7 @@ export default function HlsVideo({
       };
     };
 
-    let detachNative = null;
-
     (async () => {
-      // Prefer hls.js (Chrome/FF/Edge); fall back to native (Safari/iOS).
       try {
         const HlsMod = await import('hls.js');
         const Hls = HlsMod.default;
@@ -77,24 +158,16 @@ export default function HlsVideo({
 
         if (Hls && Hls.isSupported()) {
           hls = new Hls({
-            // ★ Force start at byte 0. Without this, hls.js sees a
-            //   growing playlist (ffmpeg is still encoding) without
-            //   #EXT-X-ENDLIST and treats it as a live stream — its
-            //   default startPosition: -1 means "start at the live
-            //   edge", which was making the player jump to ~12 s before
-            //   the most-recently-encoded segment every time the
-            //   playlist refreshed. We always want to start at 0.
+            // Force start at byte 0. Without this hls.js's default of
+            // -1 ("live edge") makes it skip to ~12 s before the most-
+            // recently-encoded segment every time the playlist refreshes
+            // while ffmpeg is still transcoding.
             startPosition: 0,
-            // Don't try to keep up with a moving live edge.
             liveSyncDurationCount: 0,
             liveMaxLatencyDurationCount: Infinity,
             lowLatencyMode: false,
-            // Buffer aggressively — server is encoding faster than
-            // realtime so segments are always available.
             maxBufferLength: 60,
             maxMaxBufferLength: 600,
-            // Be patient on the first fragment (ffmpeg may still be
-            // ramping up its segment writes).
             manifestLoadingTimeOut: 20000,
             manifestLoadingMaxRetry: 4,
             manifestLoadingRetryDelay: 1000,
@@ -105,26 +178,22 @@ export default function HlsVideo({
           hlsRef.current = hls;
 
           hls.on(Hls.Events.MANIFEST_PARSED, () => {
-            if (autoPlay) video.play().catch(() => { /* gesture-required */ });
+            if (autoPlay) video.play().catch(() => {});
             onReadyRef.current?.();
           });
 
           hls.on(Hls.Events.ERROR, (_evt, data) => {
             if (!data.fatal) return;
-            // Try to recover transparently before bubbling.
             switch (data.type) {
               case Hls.ErrorTypes.NETWORK_ERROR:
-                console.warn('[hls] fatal network error, retrying…', data.details);
                 try { hls.startLoad(); return; } catch (_) {}
                 break;
               case Hls.ErrorTypes.MEDIA_ERROR:
-                console.warn('[hls] fatal media error, recovering…', data.details);
                 try { hls.recoverMediaError(); return; } catch (_) {}
                 break;
               default:
                 break;
             }
-            console.error('[hls] fatal, giving up:', data);
             if (!disposed) onFatalRef.current?.(new Error(`${data.type}/${data.details}`));
           });
 
@@ -133,7 +202,6 @@ export default function HlsVideo({
           return;
         }
 
-        // hls.js not supported → try native (Safari etc.)
         if (video.canPlayType('application/vnd.apple.mpegurl')) {
           detachNative = attachNative();
           return;
@@ -141,7 +209,6 @@ export default function HlsVideo({
         onFatalRef.current?.(new Error('HLS not supported in this browser'));
       } catch (e) {
         if (disposed) return;
-        // Last-ditch attempt with native
         if (video.canPlayType('application/vnd.apple.mpegurl')) {
           detachNative = attachNative();
         } else {
@@ -157,6 +224,8 @@ export default function HlsVideo({
         hlsRef.current = null;
       }
       if (detachNative) detachNative();
+      if (flashTimerRef.current) clearTimeout(flashTimerRef.current);
+      if (clickTimerRef.current) clearTimeout(clickTimerRef.current);
       try {
         video.removeAttribute('src');
         video.load();
@@ -165,12 +234,55 @@ export default function HlsVideo({
   }, [src, autoPlay]);
 
   return (
-    <video
-      ref={videoRef}
-      controls
-      playsInline
-      poster={poster || undefined}
-      className={className}
-    />
+    <div
+      ref={wrapRef}
+      tabIndex={0}
+      onKeyDown={handleKey}
+      className={`relative outline-none group ${className}`}
+      style={{ position: 'relative' }}
+    >
+      <video
+        ref={videoRef}
+        controls
+        playsInline
+        poster={poster || undefined}
+        onClick={handleClick}
+        className="w-full h-full object-contain bg-black"
+        style={{ cursor: 'pointer' }}
+      />
+
+      {/* Brief play/pause icon flash to make click feedback feel intentional. */}
+      {flash && (
+        <div
+          aria-hidden="true"
+          className="pointer-events-none absolute inset-0 flex items-center justify-center"
+        >
+          <div
+            className="rounded-full bg-black/60 backdrop-blur-md p-5 shadow-2xl"
+            style={{
+              animation: 'streamix-fade-flash 600ms ease-out forwards',
+            }}
+          >
+            {flash === 'play' ? (
+              <svg width="48" height="48" viewBox="0 0 24 24" fill="white">
+                <path d="M8 5v14l11-7z" />
+              </svg>
+            ) : (
+              <svg width="48" height="48" viewBox="0 0 24 24" fill="white">
+                <path d="M6 5h4v14H6zM14 5h4v14h-4z" />
+              </svg>
+            )}
+          </div>
+        </div>
+      )}
+
+      <style jsx>{`
+        @keyframes streamix-fade-flash {
+          0%   { opacity: 0; transform: scale(0.6); }
+          25%  { opacity: 1; transform: scale(1.0); }
+          100% { opacity: 0; transform: scale(1.4); }
+        }
+      `}</style>
+    </div>
   );
 }
