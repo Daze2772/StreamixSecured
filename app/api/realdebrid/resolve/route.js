@@ -131,8 +131,8 @@ function rankStream(filename, sizeBytes, name = '') {
 }
 
 /** Create an HLS session, probe duration synchronously, and return playlist URL + metadata. */
-async function buildHlsUrl(sourceUrl, meta = {}, startOffset = 0, probeTimeout = 5000) {
-  const session = createSession(sourceUrl, meta, startOffset);
+async function buildHlsUrl(sourceUrl, meta = {}, startOffset = 0, audioIndex = null, probeTimeout = 5000) {
+  const session = createSession(sourceUrl, meta, startOffset, audioIndex);
   // Probe synchronously so sourceDuration is available in the resolver
   // response. Uses a 5s timeout (not 30s) so dead/slow streams fail fast
   // without blocking the resolver for a minute. If probe fails we return
@@ -145,6 +145,8 @@ async function buildHlsUrl(sourceUrl, meta = {}, startOffset = 0, probeTimeout =
   return {
     streamUrl: `/api/stream/hls/${session.id}/index.m3u8`,
     sourceDuration: session.sourceDuration || null,
+    audioStreams: session.audioStreams || [],
+    selectedAudioIndex: session.selectedAudioIndex ?? 0,
   };
 }
 
@@ -172,6 +174,15 @@ export async function GET(request) {
     const raw = parseFloat(searchParams.get('start') || '0');
     if (!Number.isFinite(raw) || raw <= 0) return 0;
     return Math.min(raw, 86400);
+  })();
+  // Optional audio track index (Phase 2). User-selected audio language via
+  // the in-player track switcher. When valid (>= 0), overrides the default
+  // English-detection logic in probeCodecs. Out-of-bounds values fall back
+  // to auto-detection (no crash).
+  const audioIndex = (() => {
+    const raw = parseInt(searchParams.get('audio') || '', 10);
+    if (Number.isNaN(raw) || raw < 0) return null;
+    return raw;
   })();
 
   if (!mediaType || (!imdbId && !tmdbId)) {
@@ -365,17 +376,19 @@ export async function GET(request) {
         filename: chosen.filename,
         sizeBytes: chosen.sizeBytes,
         quality: chosen.name,
-      }, startOffset);
+      }, startOffset, audioIndex);
       hlsResult = {
         streamUrl: `/api/stream/hls/${session.id}/index.m3u8`,
         sourceDuration: null,
+        audioStreams: [],
+        selectedAudioIndex: 0,
       };
     } else {
       hlsResult = await buildHlsUrl(chosen.url, {
         filename: chosen.filename,
         sizeBytes: chosen.sizeBytes,
         quality: chosen.name,
-      }, startOffset);
+      }, startOffset, audioIndex);
     }
 
     // ── Per-resolution quality bucket ────────────────────────────
@@ -415,8 +428,10 @@ export async function GET(request) {
                 filename: entry.filename,
                 sizeBytes: entry.sizeBytes,
                 quality: entry.name,
-              }, startOffset).id}/index.m3u8`,
+              }, startOffset, audioIndex).id}/index.m3u8`,
               sourceDuration: hlsResult.sourceDuration, // same source file
+              audioStreams: hlsResult.audioStreams,     // same source file
+              selectedAudioIndex: hlsResult.selectedAudioIndex,
             };
         return {
           label,
@@ -457,6 +472,11 @@ export async function GET(request) {
       // if ffprobe failed; the frontend falls back to the old growing-
       // duration behavior (video.duration + startOffset).
       sourceDuration: hlsResult.sourceDuration,
+      // Audio tracks detected in the source (Phase 2). Multi-audio MKVs
+      // (e.g. "Fight Club [English Hindi]") expose all detected streams
+      // so the user can switch mid-playback. Empty array if probe failed.
+      audioStreams: hlsResult.audioStreams,
+      selectedAudioIndex: hlsResult.selectedAudioIndex,
       // Per-resolution quality picker. ≤ 4 entries, sorted hi→lo. The
       // player's settings menu lists these alongside an "Auto" option;
       // when the user picks one, the player swaps src to the matching
@@ -472,13 +492,15 @@ export async function GET(request) {
       alternates: alternates.slice(0, 5).map((s) => ({
         streamUrl: `/api/stream/hls/${createSession(s.url, {
           filename: s.filename, sizeBytes: s.sizeBytes, quality: s.name,
-        }, startOffset).id}/index.m3u8`,
+        }, startOffset, audioIndex).id}/index.m3u8`,
         streamType: 'hls',
         directUrl: s.url,
         filename: s.filename || s.name,
         quality: s.name,
         sizeBytes: s.sizeBytes,
         sourceDuration: hlsResult.sourceDuration, // assume same source file
+        audioStreams: hlsResult.audioStreams,     // assume same source file
+        selectedAudioIndex: hlsResult.selectedAudioIndex,
       })),
     });
   } catch (error) {

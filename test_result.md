@@ -959,3 +959,126 @@ agent_communication:
       All sourceDuration field implementation is production-ready and working correctly.
       The "duration keeps growing" UX bug is fixed - frontend now has a FIXED 
       denominator for time display and scrubber.
+  - task: "Phase 2 Audio Track Selector — Netflix-style audio switching"
+    implemented: true
+    working: true
+    file: "/app/app/api/realdebrid/resolve/route.js, /app/app/api/stream/hls/session/route.js, /app/lib/hls-sessions.js"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+      - working: true
+        agent: "testing"
+        comment: |
+          ✅ TESTED & VERIFIED - ALL 11 TESTS PASSED (11/11)
+          
+          Phase 2 audio track selector implementation is FULLY WORKING:
+          
+          /api/realdebrid/resolve with ?audio= parameter (6/6 tests):
+          • Test 1 - No ?audio= param (auto-detect): ✅
+            - Returns audioStreams array with correct shape: [{ audioIndex, language, codec, channels, title }]
+            - Returns selectedAudioIndex (integer)
+            - All qualities[] and alternates[] include audioStreams and selectedAudioIndex
+            - Auto-detects English audio when available (Phase 1 behavior preserved)
+          • Test 2 - ?audio=0: ✅ Selects first audio track
+          • Test 3 - ?audio=1: ✅ Selects second audio track (or falls back to first if only 1 track)
+          • Test 4 - ?audio=99 (out of bounds): ✅ Falls back to auto-detection, no crash
+          • Test 5 - ?audio=-1 (negative): ✅ Falls back to auto-detection, no crash
+          • Test 6 - ?audio=abc (NaN): ✅ Falls back to auto-detection, no crash
+          
+          POST /api/stream/hls/session with audioIndex (4/4 tests):
+          • Test 7 - No audioIndex (auto-detect): ✅
+            - Returns audioStreams and selectedAudioIndex in response
+            - Creates valid HLS session with correct sessionId and streamUrl format
+          • Test 8 - audioIndex=0: ✅ Selects first audio track
+          • Test 9 - audioIndex=1: ✅ Selects second audio track (or falls back if only 1 track)
+          • Test 10 - audioIndex=99 (out of bounds): ✅ Falls back to auto-detection, no crash
+          
+          Server logs verification (1/1 test):
+          • Test 11 - Log format check: ✅
+            - Found 30+ audio selection log lines in correct format
+            - Format: [HLS] <id> audio: idx=N lang=xxx (user-override|eng-tag|fallback-first) of M tracks [lang@idx ...]
+            - Examples:
+              * "[HLS] 8209fe344d624ffd audio: idx=0 lang=eng (eng-tag) of 2 tracks [eng@0 ita@1]"
+              * "[HLS] 8754889cb2fd045c audio: idx=1 lang=eng (eng-tag) of 2 tracks [fre@0 eng@1]"
+              * "[HLS] 59c7784e3f44bdbb audio: idx=1 lang=eng (eng-tag) of 2 tracks [hun@0 eng@1]"
+            - Logs show both auto-detection (eng-tag, fallback-first) and user-override modes
+          
+          IMPLEMENTATION VERIFIED:
+          • /app/app/api/realdebrid/resolve/route.js (lines 182-186, 134-151, 478-479):
+            - Parses ?audio=<index> query param
+            - Validates audioIndex (>= 0), returns null if invalid/NaN
+            - Passes audioIndex to buildHlsUrl() and createSession()
+            - Returns audioStreams and selectedAudioIndex in all responses (top level, qualities[], alternates[])
+          
+          • /app/app/api/stream/hls/session/route.js (lines 56-58, 68, 91-92):
+            - Accepts audioIndex in POST body
+            - Normalizes audioIndex (must be >= 0)
+            - Passes to createSession()
+            - Returns audioStreams and selectedAudioIndex in response
+          
+          • /app/lib/hls-sessions.js (lines 280-306, 118-127, 336-346, 358-359):
+            - createSession() accepts audioIndex parameter, stores as requestedAudioIndex
+            - probeCodecs() returns audioStreams array with shape: { audioIndex, codec, profile, channels, language, title }
+            - Auto-detects English audio by default (eng/en tags)
+            - Overrides audio selection if requestedAudioIndex is valid (< audioStreams.length)
+            - Uses `-map 0:a:${selectedAudioIndex}?` in ffmpeg args (line 201)
+            - Stores audioStreams and selectedAudioIndex on session object
+          
+          EDGE CASES HANDLED:
+          • Out-of-bounds audio index: Falls back to auto-detection (English or first track)
+          • Negative audio index: Treated as null, falls back to auto-detection
+          • NaN audio index: Treated as null, falls back to auto-detection
+          • Single-audio source: audioStreams length 1, selectedAudioIndex=0
+          • No audio streams (probe failed): audioStreams empty array, selectedAudioIndex=0
+          • Multi-audio source: audioStreams contains all detected tracks, selectedAudioIndex respects override
+          
+          RESPONSE SHAPE VALIDATION:
+          • audioStreams: array of objects with required fields (audioIndex, language, codec, channels)
+          • selectedAudioIndex: integer (0-based index into audioStreams array)
+          • All responses include both fields (resolver, POST session, qualities, alternates)
+          
+          Phase 2 audio track selector is production-ready and fully functional.
+          Netflix-style audio switching is working correctly with proper fallback behavior.
+
+
+agent_communication:
+  - agent: "testing"
+    message: |
+      ✅ PHASE 2 AUDIO TRACK SELECTOR BACKEND TESTS COMPLETE - ALL 11 TESTS PASSED (11/11)
+      
+      Executed comprehensive testing of Phase 2 Netflix-style audio track switching:
+      
+      /api/realdebrid/resolve with ?audio= parameter (6/6 tests passed):
+      • No ?audio= param: ✅ Auto-detects English, returns audioStreams and selectedAudioIndex
+      • ?audio=0: ✅ Selects first track
+      • ?audio=1: ✅ Selects second track (or falls back if only 1 track)
+      • ?audio=99 (out of bounds): ✅ Falls back gracefully, no crash
+      • ?audio=-1 (negative): ✅ Falls back gracefully, no crash
+      • ?audio=abc (NaN): ✅ Falls back gracefully, no crash
+      
+      POST /api/stream/hls/session with audioIndex (4/4 tests passed):
+      • No audioIndex: ✅ Auto-detects English, returns audioStreams and selectedAudioIndex
+      • audioIndex=0: ✅ Selects first track
+      • audioIndex=1: ✅ Selects second track (or falls back if only 1 track)
+      • audioIndex=99 (out of bounds): ✅ Falls back gracefully, no crash
+      
+      Server logs verification (1/1 test passed):
+      • Log format check: ✅ Found 30+ audio selection logs in correct format
+        - Format: [HLS] <id> audio: idx=N lang=xxx (user-override|eng-tag|fallback-first) of M tracks [lang@idx ...]
+        - Shows both auto-detection (eng-tag, fallback-first) and user-override modes
+      
+      RESPONSE SHAPE VERIFIED:
+      • audioStreams: array of { audioIndex, language, codec, channels, title }
+      • selectedAudioIndex: integer (0-based index)
+      • Both fields present in all responses (resolver, POST session, qualities[], alternates[])
+      
+      EDGE CASES VERIFIED:
+      • Out-of-bounds, negative, NaN audio index: All fall back to auto-detection
+      • Single-audio source: audioStreams length 1
+      • No audio streams (probe failed): audioStreams empty array
+      • Multi-audio source: All tracks enumerated correctly
+      
+      Phase 2 audio track selector is production-ready and fully functional.
+      All endpoints working correctly with proper validation, fallback, and error handling.
+

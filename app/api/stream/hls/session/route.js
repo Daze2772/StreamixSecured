@@ -38,7 +38,7 @@ const isAllowedSource = (url) => {
 export async function POST(request) {
   try {
     const body = await request.json().catch(() => ({}));
-    const { sourceUrl, filename, sizeBytes, quality, start } = body || {};
+    const { sourceUrl, filename, sizeBytes, quality, start, audioIndex } = body || {};
 
     if (!isAllowedSource(sourceUrl)) {
       return NextResponse.json(
@@ -52,6 +52,11 @@ export async function POST(request) {
     if (!Number.isFinite(startOffset) || startOffset <= 0) startOffset = 0;
     startOffset = Math.min(startOffset, 86400);
 
+    // Phase 2: Optional audio track index for mid-playback audio switches.
+    const normalizedAudioIndex = typeof audioIndex === 'number' && audioIndex >= 0 
+      ? Math.floor(audioIndex) 
+      : null;
+
     const session = createSession(
       sourceUrl,
       {
@@ -60,6 +65,7 @@ export async function POST(request) {
         quality: typeof quality === 'string' ? quality.slice(0, 100) : undefined,
       },
       startOffset,
+      normalizedAudioIndex,
     );
 
     // ── Probe source duration immediately (quality-switch path) ───
@@ -82,6 +88,8 @@ export async function POST(request) {
       streamType: 'hls',
       startOffset,
       sourceDuration: session.sourceDuration || null,
+      audioStreams: session.audioStreams || [],
+      selectedAudioIndex: session.selectedAudioIndex ?? 0,
     });
   } catch (error) {
     console.error('[HLS session] Error:', error?.message);
