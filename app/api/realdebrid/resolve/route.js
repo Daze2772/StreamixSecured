@@ -131,15 +131,14 @@ function rankStream(filename, sizeBytes, name = '') {
 }
 
 /** Create an HLS session, probe duration synchronously, and return playlist URL + metadata. */
-async function buildHlsUrl(sourceUrl, meta = {}, startOffset = 0) {
+async function buildHlsUrl(sourceUrl, meta = {}, startOffset = 0, probeTimeout = 5000) {
   const session = createSession(sourceUrl, meta, startOffset);
   // Probe synchronously so sourceDuration is available in the resolver
-  // response. Adds ~200-500ms latency but ensures the frontend gets a
-  // FIXED denominator immediately (no growing-duration flicker). Timeout
-  // at 3s to avoid hanging the entire resolve — if probe fails we return
+  // response. Uses a 5s timeout (not 30s) so dead/slow streams fail fast
+  // without blocking the resolver for a minute. If probe fails we return
   // null and the frontend gracefully falls back to growing-duration.
   try {
-    await ensureFfmpeg(session);
+    await ensureFfmpeg(session, probeTimeout);
   } catch (e) {
     console.warn(`[RD] Duration probe failed for session ${session.id}:`, e?.message);
   }
@@ -368,6 +367,11 @@ export async function GET(request) {
     // When the bucket leader is the same RD source as `chosen` we reuse
     // its HLS session URL — creating a second session for the same source
     // would just be a wasted /tmp dir.
+    //
+    // IMPORTANT: We DON'T probe qualities here — they're all transcodes
+    // of the same source file (chosen.url) at different resolutions, so
+    // they share the SAME sourceDuration. Probing each would multiply
+    // resolver latency by N qualities. Instead we reuse hlsResult.sourceDuration.
     const qualityByRes = {};
     for (let i = 0; i < probes.length; i++) {
       if (!probes[i].ok) continue;
@@ -377,17 +381,23 @@ export async function GET(request) {
       if (qualityByRes[res]) continue;
       qualityByRes[res] = c;
     }
-    const qualitiesPromises = RES_ORDER
-      .map(async (label) => {
+    const qualities = RES_ORDER
+      .map((label) => {
         const entry = qualityByRes[label];
         if (!entry) return null;
+        // If this quality points to the same source as chosen, reuse the
+        // already-probed session. Otherwise create a new session BUT
+        // DON'T probe it (lazy — probe happens when user switches quality).
         const result = entry.url === chosen.url
           ? hlsResult
-          : await buildHlsUrl(entry.url, {
-              filename: entry.filename,
-              sizeBytes: entry.sizeBytes,
-              quality: entry.name,
-            }, startOffset);
+          : {
+              streamUrl: `/api/stream/hls/${createSession(entry.url, {
+                filename: entry.filename,
+                sizeBytes: entry.sizeBytes,
+                quality: entry.name,
+              }, startOffset).id}/index.m3u8`,
+              sourceDuration: hlsResult.sourceDuration, // same source file
+            };
         return {
           label,
           streamUrl: result.streamUrl,
@@ -402,8 +412,7 @@ export async function GET(request) {
           directUrl: entry.url,
           sourceDuration: result.sourceDuration,
         };
-      });
-    const qualities = (await Promise.all(qualitiesPromises))
+      })
       .filter(Boolean)
       .slice(0, 4);
 
@@ -436,22 +445,21 @@ export async function GET(request) {
       // Pre-ranked alternates the client can rotate to if the top HLS
       // session fails for any reason (e.g., ffmpeg refused to demux this
       // particular source). Each alternate gets its own HLS session.
-      alternates: await Promise.all(
-        alternates.slice(0, 5).map(async (s) => {
-          const result = await buildHlsUrl(s.url, {
-            filename: s.filename, sizeBytes: s.sizeBytes, quality: s.name,
-          }, startOffset);
-          return {
-            streamUrl: result.streamUrl,
-            streamType: 'hls',
-            directUrl: s.url,
-            filename: s.filename || s.name,
-            quality: s.name,
-            sizeBytes: s.sizeBytes,
-            sourceDuration: result.sourceDuration,
-          };
-        })
-      ),
+      // Like qualities, alternates are NOT probed here (lazy) — they're
+      // fallbacks only used if the primary fails. We still return
+      // sourceDuration = hlsResult.sourceDuration because alternates are
+      // typically the same source file from different RD mirrors/torrents.
+      alternates: alternates.slice(0, 5).map((s) => ({
+        streamUrl: `/api/stream/hls/${createSession(s.url, {
+          filename: s.filename, sizeBytes: s.sizeBytes, quality: s.name,
+        }, startOffset).id}/index.m3u8`,
+        streamType: 'hls',
+        directUrl: s.url,
+        filename: s.filename || s.name,
+        quality: s.name,
+        sizeBytes: s.sizeBytes,
+        sourceDuration: hlsResult.sourceDuration, // assume same source file
+      })),
     });
   } catch (error) {
     console.error('[RD] Error:', error.message);
