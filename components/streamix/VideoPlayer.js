@@ -348,10 +348,15 @@ const VideoPlayer = ({
       params.set('episode', String(episode));
     }
 
-    fetch(`/api/subtitles/search?${params.toString()}`)
+    const searchUrl = `/api/subtitles/search?${params.toString()}`;
+    console.log(`[Subtitles] Fetching: ${searchUrl}`);
+
+    fetch(searchUrl)
       .then(async (r) => {
         const data = await r.json().catch(() => ({}));
         if (cancelled) return;
+
+        console.log(`[Subtitles] Response status: ${r.status}, IMDB: ${data.imdb_id || 'N/A'}, Results: ${(data.results || []).length}`);
 
         if (!r.ok) {
           if (r.status === 429 || data.error === 'daily_quota_exhausted') {
@@ -556,6 +561,8 @@ const VideoPlayer = ({
                 onSubtitleChange={(lang) => {
                   setSubtitles((prev) => ({ ...prev, selected: lang }));
                 }}
+                subtitlesLoading={subtitles.loading}
+                subtitlesError={subtitles.error}
                 onReady={() => updateStatus(serverIdx, STATUS.OK)}
                 onFatal={() => {
                   // The HLS player gave up. Try alternates (each its own
