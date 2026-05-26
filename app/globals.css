@@ -76,3 +76,10 @@ html, body {
   to { transform: scale(1.08); }
 }
 .slow-zoom { animation: slowZoom 20s ease-in-out infinite alternate; }
+
+/* Hide watch page top bar on phones in landscape (max-height: 500px) */
+@media (orientation: landscape) and (max-height: 500px) {
+  .hide-landscape-phone {
+    display: none;
+  }
+}

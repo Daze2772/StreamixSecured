@@ -942,7 +942,7 @@ export default function HlsVideo({
               
               {/* CC Popover */}
               {subtitlesOpen && (
-                <div className="absolute bottom-12 right-0 w-56 rounded-lg bg-black/95 backdrop-blur-md text-white shadow-2xl border border-white/10 overflow-hidden">
+                <div className="absolute bottom-12 right-0 w-56 max-sm:max-w-[calc(100vw-2rem)] rounded-lg bg-black/95 backdrop-blur-md text-white shadow-2xl border border-white/10 overflow-hidden">
                   <div className="py-1">
                     {/* Loading state */}
                     {subtitlesLoading && (

@@ -45,7 +45,7 @@ const App = () => {
 
       <Hero items={hero} onMoreInfo={openItem} />
 
-      <div className="relative -mt-16 md:-mt-24 z-10 space-y-2 md:space-y-3" id="trending">
+      <div className="relative -mt-12 md:-mt-24 z-10 space-y-2 md:space-y-3" id="trending">
         {/* Above-the-fold: eager */}
         <Row title="Trending Today" items={trendingDay} loading={trendingDay == null} onCardClick={openItem} />
         <Row title="Trending This Week" items={trendingWeek} loading={trendingWeek == null} onCardClick={openItem} />

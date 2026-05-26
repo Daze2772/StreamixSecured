@@ -53,7 +53,7 @@ const WatchPage = () => {
   return (
     <main className="min-h-screen bg-black text-white">
       {/* Top bar */}
-      <div className="sticky top-0 z-40 bg-black/95 backdrop-blur border-b border-white/5">
+      <div className="hide-landscape-phone sticky top-0 z-40 bg-black/95 backdrop-blur border-b border-white/5">
         <div className="flex items-center justify-between px-4 md:px-8 h-14">
           <button
             onClick={() => router.push('/')}
