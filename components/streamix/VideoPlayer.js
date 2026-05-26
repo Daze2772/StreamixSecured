@@ -62,6 +62,14 @@ const VideoPlayer = ({
   title = null,
   posterPath = null,
   backdropPath = null,
+  // Continue Watching resume offset (seconds, real-world). When > 0, the
+  // RD resolver is invoked with `&start=<initialResume>` so the spawned
+  // HLS sessions begin at the saved position. The session's startOffset
+  // is echoed back to us as `premium.sessionStartOffset` and threaded
+  // into HlsVideo for display + progress accounting. Only honoured on
+  // the FIRST mount per route (the parent watch page snapshots it from
+  // the URL once).
+  initialResume = 0,
 }) => {
   // Persistence keys
   const persistKey = useMemo(
@@ -101,8 +109,19 @@ const VideoPlayer = ({
   const [premium, setPremium] = useState({
     state: 'idle', url: null, quality: null, title: null, error: null,
     alternates: [], altIndex: 0, qualities: [],
+    // Real-world seconds the HLS session(s) START at. 0 = fresh playback.
+    // > 0 = Continue Watching resume (initialResume from URL) baked into
+    // ffmpeg via `-ss`. The frontend displays (currentTime + sessionStartOffset)
+    // and saves progress as (currentTime + sessionStartOffset). When the
+    // user switches quality mid-playback we POST /api/stream/hls/session
+    // with start=<currentRealTime> and update this value to the new offset.
+    sessionStartOffset: 0,
   });
   const premiumCacheRef = useRef(new Map());
+  // initialResume should only fire the resume path on the FIRST resolver
+  // hit per mount. If the user navigates to another episode in-page (which
+  // re-runs the resolver), we must NOT re-resume from the URL's resume.
+  const resumeConsumedRef = useRef(false);
 
   // Subtitles state
   const [subtitles, setSubtitles] = useState({ 
@@ -193,7 +212,7 @@ const VideoPlayer = ({
   // ────────────────────────────────────────────────────────────
   useEffect(() => {
     if (!activeServer.isPremium) {
-      setPremium((p) => (p.state === 'idle' ? p : { state: 'idle', url: null, quality: null, title: null, error: null, alternates: [], altIndex: 0, qualities: [] }));
+      setPremium((p) => (p.state === 'idle' ? p : { state: 'idle', url: null, quality: null, title: null, error: null, alternates: [], altIndex: 0, qualities: [], sessionStartOffset: 0 }));
       return;
     }
     if (!playerActive || showTrailer) return;
@@ -210,7 +229,7 @@ const VideoPlayer = ({
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), PREMIUM_TIMEOUT_MS);
 
-    setPremium({ state: 'loading', url: null, quality: null, title: null, error: null, alternates: [], altIndex: 0, qualities: [] });
+    setPremium({ state: 'loading', url: null, quality: null, title: null, error: null, alternates: [], altIndex: 0, qualities: [], sessionStartOffset: 0 });
     updateStatus(serverIdx, STATUS.LOADING);
     setToast(null);
 
@@ -246,6 +265,7 @@ const VideoPlayer = ({
             title: data.filename || '',
             alternates: [],
             qualities: [],
+            sessionStartOffset: 0,
           };
           premiumCacheRef.current.set(cacheKey, payload);
           setPremium({ state: 'ok', ...payload, error: null, altIndex: 0 });
@@ -254,7 +274,7 @@ const VideoPlayer = ({
         .catch(err => {
           if (cancelled) return;
           console.error(`[Premium AD] Error:`, err);
-          setPremium({ state: 'error', url: null, quality: null, title: null, error: err.message, alternates: [], altIndex: 0, qualities: [] });
+          setPremium({ state: 'error', url: null, quality: null, title: null, error: err.message, alternates: [], altIndex: 0, qualities: [], sessionStartOffset: 0 });
           updateStatus(serverIdx, STATUS.FAILED);
           triedAutoSwitchRef.current.add(serverIdx);
           setToast({ kind: 'error', msg: `AllDebrid: ${err.message}` });
@@ -274,6 +294,15 @@ const VideoPlayer = ({
       params.set('season', String(season));
       params.set('episode', String(episode));
     }
+    // Resume offset — only on the FIRST resolver hit of this mount. After
+    // consumption, the ref is set so subsequent episode-change resolves
+    // (TV) re-start from 0 of the new episode rather than re-applying
+    // the URL's `?resume=` (which was meaningful only for the original
+    // {mediaType, tmdbId, season, episode} the user clicked).
+    if (!resumeConsumedRef.current && initialResume > 0) {
+      params.set('start', String(initialResume));
+    }
+    resumeConsumedRef.current = true;
 
     fetch(`${apiEndpoint}?${params.toString()}`, { signal: controller.signal })
       .then(async (r) => {
@@ -288,6 +317,7 @@ const VideoPlayer = ({
           title: data.filename || '',
           alternates: Array.isArray(data.alternates) ? data.alternates : [],
           qualities: Array.isArray(data.qualities) ? data.qualities : [],
+          sessionStartOffset: Number(data.startOffset) || 0,
         };
         premiumCacheRef.current.set(cacheKey, payload);
         setPremium({ state: 'ok', ...payload, error: null, altIndex: 0 });
@@ -298,7 +328,7 @@ const VideoPlayer = ({
         const msg = e.name === 'AbortError'
           ? 'Premium resolution timed out.'
           : (e.message || 'Premium resolution failed.');
-        setPremium({ state: 'error', url: null, quality: null, title: null, error: msg, alternates: [], altIndex: 0, qualities: [] });
+        setPremium({ state: 'error', url: null, quality: null, title: null, error: msg, alternates: [], altIndex: 0, qualities: [], sessionStartOffset: 0 });
         updateStatus(serverIdx, STATUS.FAILED);
         triedAutoSwitchRef.current.add(serverIdx);
         setToast({
@@ -558,13 +588,64 @@ const VideoPlayer = ({
                 className="w-full h-full object-contain bg-black"
                 qualityLabel={premium.quality || 'Source · 1080p'}
                 qualityOptions={premium.qualities || []}
-                onQualityChange={(label, url) => {
-                  // The picker (or its 10s safety revert) is asking us to
-                  // swap the source. We only update `url` — quality label
-                  // on the action bar continues to reflect the resolver's
-                  // original primary pick, which is intentional (it's a
-                  // brand mark, not a live indicator).
-                  setPremium((p) => ({ ...p, url }));
+                sessionStartOffset={premium.sessionStartOffset || 0}
+                onQualityChange={async (label, target, realTime) => {
+                  // Three paths converge here:
+                  //   1. Safety-timer revert from HlsVideo. target is the
+                  //      minimal { streamUrl: <prevUrl> } the picker stashed
+                  //      pre-swap, realTime is null. We do an in-place URL
+                  //      swap; the offset is unchanged, so HlsVideo's hls
+                  //      effect restores currentTime via pendingSeekRef and
+                  //      the user lands where they were.
+                  //   2. Quality option without directUrl (legacy / Auto on
+                  //      a server that didn't expose it). Same path as (1)
+                  //      — in-place swap, pre-built session handles position
+                  //      restoration with the SAME startOffset as the
+                  //      current session.
+                  //   3. Manual quality pick with directUrl + a known
+                  //      realTime. We POST to /api/stream/hls/session to
+                  //      mint a brand-new HLS session whose first segment
+                  //      sits at the user's current real-world second.
+                  //      Atomically swap both url AND sessionStartOffset;
+                  //      HlsVideo detects the offset change and skips
+                  //      pendingSeekRef so the new session plays from t=0
+                  //      (= the desired real second).
+                  if (!target?.directUrl || !Number.isFinite(realTime)) {
+                    setPremium((p) => ({ ...p, url: target?.streamUrl || p.url }));
+                    return;
+                  }
+                  try {
+                    const res = await fetch('/api/stream/hls/session', {
+                      method: 'POST',
+                      headers: { 'Content-Type': 'application/json' },
+                      body: JSON.stringify({
+                        sourceUrl: target.directUrl,
+                        start: realTime,
+                        quality: target.label || label,
+                        filename: target.filename,
+                        sizeBytes: target.sizeBytes,
+                      }),
+                    });
+                    const data = await res.json().catch(() => ({}));
+                    if (!res.ok || !data.success || !data.streamUrl) {
+                      throw new Error(data.error || `Session creation failed (${res.status})`);
+                    }
+                    setPremium((p) => ({
+                      ...p,
+                      url: data.streamUrl,
+                      sessionStartOffset: Number(data.startOffset) || realTime,
+                    }));
+                  } catch (e) {
+                    // Per spec: if fresh-session creation fails, fall back
+                    // to the pre-built streamUrl so playback isn't broken.
+                    // This effectively resets to the resolver's original
+                    // startOffset (current accepted behavior pre-§10) for
+                    // this swap only — the user can resume normally on the
+                    // next page load.
+                    // TODO: surface this fallback with a toast.
+                    console.warn('[Quality swap] new-session creation failed; falling back to pre-built URL:', e?.message);
+                    setPremium((p) => ({ ...p, url: target.streamUrl }));
+                  }
                 }}
                 subtitleTracks={subtitles.available}
                 selectedSubtitle={subtitles.selected}

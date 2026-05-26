@@ -1,80 +1,71 @@
 'use client';
 
-import { useState } from 'react';
-import { X } from 'lucide-react';
-import { backdrop } from '@/lib/tmdb';
+import { img } from '@/lib/tmdb';
 
 /**
- * ContinueWatchingCard — Shows a title with progress bar + remove button
- * 
+ * ContinueWatchingCard — Vertical poster card matching MovieCard, with
+ * a progress bar at the bottom of the poster (3-4px, red).
+ *
+ * §10 — The X (remove) button was removed entirely. It was intercepting
+ * the first tap on iOS Safari (hover-on-touch quirk), forcing users to
+ * tap 2-3 times before the click landed on the card itself. Single tap
+ * now navigates immediately. The DELETE /api/progress route is preserved
+ * server-side for future re-introduction.
+ *
  * Props:
  * - item: watch_progress entry from API
- * - onClick: Navigate to /watch
- * - onRemove: Delete from Continue Watching
+ * - onClick: () => void — navigate to /watch/<...>?s=&e=&resume=
  */
-const ContinueWatchingCard = ({ item, onClick, onRemove }) => {
-  const [showRemove, setShowRemove] = useState(false);
-  
-  const bgImage = backdrop(item.backdropPath || item.posterPath, 'w780');
-  const progress = item.duration > 0 ? (item.position / item.duration) * 100 : 0;
-  
-  // Format title + episode info
-  let displayTitle = item.title || 'Unknown';
+const ContinueWatchingCard = ({ item, onClick }) => {
+  const poster = img(item.posterPath, 'w342');
+  const progress = item.duration > 0
+    ? Math.min(100, Math.max(0, (item.position / item.duration) * 100))
+    : 0;
+
+  let displayTitle = item.title || 'Untitled';
+  let subtitle = '';
   if (item.mediaType === 'tv' && item.season && item.episode) {
-    displayTitle += ` — S${item.season} · E${item.episode}`;
-    if (item.episodeTitle) {
-      displayTitle += ` ${item.episodeTitle}`;
-    }
+    subtitle = `S${item.season} · E${item.episode}`;
+    if (item.episodeTitle) subtitle += ` · ${item.episodeTitle}`;
+  } else if (item.mediaType === 'movie') {
+    subtitle = 'Movie';
   }
 
   return (
-    <div
-      className="relative flex-none w-[280px] sm:w-[320px] group cursor-pointer"
-      onMouseEnter={() => setShowRemove(true)}
-      onMouseLeave={() => setShowRemove(false)}
+    <button
       onClick={onClick}
+      className="group relative flex-none w-[140px] md:w-[180px] text-left transition-transform duration-300 hover:scale-105 hover:z-10"
     >
-      {/* Backdrop image */}
-      <div className="relative aspect-video rounded-md overflow-hidden bg-neutral-800">
-        {bgImage ? (
+      <div className="relative aspect-[2/3] overflow-hidden rounded-md bg-neutral-900 ring-1 ring-white/5">
+        {poster ? (
           // eslint-disable-next-line @next/next/no-img-element
-          <img src={bgImage} alt={displayTitle} className="w-full h-full object-cover" />
+          <img
+            src={poster}
+            alt={displayTitle}
+            loading="lazy"
+            decoding="async"
+            className="h-full w-full object-cover transition duration-300 group-hover:brightness-110"
+          />
         ) : (
-          <div className="w-full h-full grid place-items-center text-neutral-600">
-            No Image
+          <div className="flex h-full w-full items-center justify-center text-xs text-neutral-500 p-2 text-center">
+            {displayTitle}
           </div>
         )}
-        
-        {/* Title overlay at bottom */}
-        <div className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-black/90 via-black/60 to-transparent p-3">
-          <p className="text-sm font-semibold text-white line-clamp-2 leading-tight">
-            {displayTitle}
-          </p>
+
+        {/* Progress bar — flush against the bottom edge of the poster.
+            3px on mobile, 4px on sm+. */}
+        <div className="absolute inset-x-0 bottom-0 h-[3px] sm:h-[4px] bg-black/50">
+          <div
+            className="h-full bg-red-600"
+            style={{ width: `${progress}%` }}
+          />
         </div>
-
-        {/* Remove button (top-right, on hover) */}
-        {showRemove && (
-          <button
-            onClick={(e) => {
-              e.stopPropagation();
-              onRemove();
-            }}
-            className="absolute top-2 right-2 h-8 w-8 rounded-full bg-black/80 hover:bg-black grid place-items-center border border-white/20 z-10"
-            aria-label="Remove from Continue Watching"
-          >
-            <X className="w-4 h-4 text-white" />
-          </button>
-        )}
       </div>
-
-      {/* Progress bar */}
-      <div className="mt-1 h-1 bg-neutral-800 rounded-full overflow-hidden">
-        <div
-          className="h-full bg-red-600 transition-all"
-          style={{ width: `${Math.min(100, Math.max(0, progress))}%` }}
-        />
+      <div className="mt-2 px-0.5">
+        <p className="text-sm text-white line-clamp-1 font-medium">{displayTitle}</p>
+        <p className="text-[11px] text-neutral-400 line-clamp-1">{subtitle}</p>
       </div>
-    </div>
+    </button>
   );
 };
 

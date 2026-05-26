@@ -20,6 +20,16 @@ const WatchPage = () => {
   const [season, setSeason] = useState(parseInt(searchParams.get('s') || '1', 10));
   const [episode, setEpisode] = useState(parseInt(searchParams.get('e') || '1', 10));
 
+  // Resume offset (seconds) — when arriving via a Continue Watching card,
+  // the URL carries `?resume=<seconds>` so we can spin up an HLS session
+  // that starts at the saved real-world position. We only honour this on
+  // the FIRST mount; subsequent in-page episode changes do not re-resume.
+  const [initialResume] = useState(() => {
+    const raw = parseFloat(searchParams.get('resume') || '0');
+    if (!Number.isFinite(raw) || raw <= 0) return 0;
+    return Math.min(raw, 86400);
+  });
+
   useEffect(() => {
     setLoading(true);
     tmdb.details(mediaType, id).then((d) => {
@@ -83,6 +93,7 @@ const WatchPage = () => {
         title={title}
         posterPath={data?.poster_path || null}
         backdropPath={data?.backdrop_path || null}
+        initialResume={initialResume}
       />
 
       {/* Episode selector for TV */}

@@ -64,39 +64,20 @@ const App = () => {
   }, []);
 
   const handleContinueWatchingClick = useCallback((item) => {
+    // §10 — Thread the saved real-world position into the watch page URL
+    // as `?resume=`. The watch page reads it and passes it to VideoPlayer
+    // as `initialResume`, which calls the resolver with `&start=` so the
+    // HLS session itself spawns at that position (via ffmpeg `-ss`).
+    // This is what makes a single tap on a CW card resume INSTANTLY at
+    // the right second, with no client-side seek-after-loadedmetadata.
+    const resumeParam = Number.isFinite(item?.position) && item.position >= 30
+      ? `&resume=${Math.floor(item.position)}`
+      : '';
     const url = item.mediaType === 'tv'
-      ? `/watch/tv/${item.tmdbId}?s=${item.season || 1}&e=${item.episode || 1}`
-      : `/watch/movie/${item.tmdbId}`;
+      ? `/watch/tv/${item.tmdbId}?s=${item.season || 1}&e=${item.episode || 1}${resumeParam}`
+      : `/watch/movie/${item.tmdbId}${resumeParam ? `?${resumeParam.slice(1)}` : ''}`;
     router.push(url);
   }, [router]);
-
-  const handleRemoveContinueWatching = useCallback(async (item) => {
-    const clientId = getClientId();
-    if (!clientId) return;
-
-    // Optimistically remove from UI
-    setContinueWatching((prev) => prev.filter((i) => 
-      !(i.mediaType === item.mediaType && i.tmdbId === item.tmdbId && 
-        i.season === item.season && i.episode === item.episode)
-    ));
-
-    try {
-      await fetch('/api/progress', {
-        method: 'DELETE',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          clientId,
-          mediaType: item.mediaType,
-          tmdbId: item.tmdbId,
-          season: item.season,
-          episode: item.episode,
-        }),
-      });
-    } catch (err) {
-      console.error('[ContinueWatching] Remove error:', err);
-      // Optionally: revert optimistic update on error
-    }
-  }, []);
 
   return (
     <main className="min-h-screen bg-black text-white">
@@ -115,7 +96,6 @@ const App = () => {
                   key={`${item.mediaType}-${item.tmdbId}-${item.season || 0}-${item.episode || 0}`}
                   item={item}
                   onClick={() => handleContinueWatchingClick(item)}
-                  onRemove={() => handleRemoveContinueWatching(item)}
                 />
               ))}
             </div>

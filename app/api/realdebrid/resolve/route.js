@@ -131,8 +131,8 @@ function rankStream(filename, sizeBytes, name = '') {
 }
 
 /** Create an HLS session and return its playlist URL for the browser. */
-function buildHlsUrl(sourceUrl, meta = {}) {
-  const session = createSession(sourceUrl, meta);
+function buildHlsUrl(sourceUrl, meta = {}, startOffset = 0) {
+  const session = createSession(sourceUrl, meta, startOffset);
   return `/api/stream/hls/${session.id}/index.m3u8`;
 }
 
@@ -152,6 +152,15 @@ export async function GET(request) {
   const season = searchParams.get('season');
   const episode = searchParams.get('episode');
   const debug = searchParams.get('debug') === '1';
+  // Optional resume offset (Continue Watching). When > 0, all HLS sessions
+  // created here (primary + qualities + alternates) are spawned with ffmpeg
+  // `-ss <start>` so the playlist begins at the user's saved real-world
+  // position. Clamped to [0, 24h] to defend against absurd inputs.
+  const startOffset = (() => {
+    const raw = parseFloat(searchParams.get('start') || '0');
+    if (!Number.isFinite(raw) || raw <= 0) return 0;
+    return Math.min(raw, 86400);
+  })();
 
   if (!mediaType || (!imdbId && !tmdbId)) {
     return NextResponse.json(
@@ -335,7 +344,7 @@ export async function GET(request) {
       filename: chosen.filename,
       sizeBytes: chosen.sizeBytes,
       quality: chosen.name,
-    });
+    }, startOffset);
 
     // ── Per-resolution quality bucket ────────────────────────────
     // For the player's "Quality" menu we want one entry per resolution
@@ -365,13 +374,19 @@ export async function GET(request) {
               filename: entry.filename,
               sizeBytes: entry.sizeBytes,
               quality: entry.name,
-            });
+            }, startOffset);
         return {
           label,
           streamUrl,
           streamType: 'hls',
           sizeBytes: entry.sizeBytes,
           filename: entry.filename || entry.name,
+          // directUrl is needed for mid-playback quality switches: the
+          // client creates a brand-new HLS session at the current real-
+          // world playback position (via POST /api/stream/hls/session).
+          // This is what makes "switch to 720p without losing my place"
+          // actually preserve position across the new ffmpeg session.
+          directUrl: entry.url,
         };
       })
       .filter(Boolean)
@@ -381,11 +396,16 @@ export async function GET(request) {
       success: true,
       streamUrl: hlsUrl,
       streamType: 'hls',
-      directUrl: chosen.url,                 // for debugging
+      directUrl: chosen.url,                 // for debugging + quality-swap re-seeding
       quality: chosen.name.slice(0, 100),
       filename: chosen.filename || chosen.name,
       sizeBytes: chosen.sizeBytes,
       probedOk: chosenIdx >= 0,
+      // Resume offset (seconds) baked into the HLS sessions. 0 when not
+      // resuming. The frontend uses this to render the time display in
+      // real-world coordinates (currentTime + startOffset) and to compute
+      // the new `start` value when creating a fresh session on quality swap.
+      startOffset,
       // Per-resolution quality picker. ≤ 4 entries, sorted hi→lo. The
       // player's settings menu lists these alongside an "Auto" option;
       // when the user picks one, the player swaps src to the matching
@@ -397,7 +417,7 @@ export async function GET(request) {
       alternates: alternates.slice(0, 5).map((s) => ({
         streamUrl: buildHlsUrl(s.url, {
           filename: s.filename, sizeBytes: s.sizeBytes, quality: s.name,
-        }),
+        }, startOffset),
         streamType: 'hls',
         directUrl: s.url,
         filename: s.filename || s.name,

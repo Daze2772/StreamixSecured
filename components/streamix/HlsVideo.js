@@ -6,7 +6,6 @@ import {
   PictureInPicture2, Settings, Check, Loader2, Subtitles as CCIcon,
 } from 'lucide-react';
 import { useProgressTracking } from '@/lib/useProgressTracking';
-import { useResumePlayback } from '@/lib/useResumePlayback';
 
 /**
  * HlsVideo — custom Tailwind player on top of hls.js
@@ -97,6 +96,13 @@ export default function HlsVideo({
   // null/empty, the legacy "Source · 1080p" single-quality block renders.
   qualityOptions = null,
   onQualityChange = null,
+  // Real-world seconds the current HLS session was spawned at (via
+  // ffmpeg `-ss`). 0 = fresh playback. > 0 = Continue Watching resume
+  // OR a mid-playback quality swap that minted a fresh session at the
+  // user's previous real-world position. The component renders the
+  // time/scrubber/saved-progress in REAL coordinates by adding this
+  // offset to the <video>'s native currentTime + duration.
+  sessionStartOffset = 0,
   // ── Subtitles ────────────────────────────────────────────────
   // subtitleTracks: [{ language, language_name, file_id }]
   // selectedSubtitle: language code ('en', 'es', etc.) or null for off
@@ -176,6 +182,8 @@ export default function HlsVideo({
   const [isBuffering, setIsBuffering] = useState(false);
 
   // ── Continue Watching hooks (progress tracking + resume) ─────
+  // metadata.sessionStartOffset is read by useProgressTracking when
+  // saving — saved values are in REAL coordinates (currentTime + offset).
   const metadata = useMemo(() => ({
     mediaType,
     tmdbId,
@@ -185,14 +193,30 @@ export default function HlsVideo({
     episodeTitle: null, // TV episode title not available in current data flow
     posterPath,
     backdropPath,
-  }), [mediaType, tmdbId, season, episode, title, posterPath, backdropPath]);
+    sessionStartOffset,
+  }), [mediaType, tmdbId, season, episode, title, posterPath, backdropPath, sessionStartOffset]);
 
   // Only track progress when we have essential metadata
   const trackingEnabled = !!(mediaType && tmdbId);
   useProgressTracking(videoRef, metadata, trackingEnabled);
 
-  const { applyResume, toast: resumeToast, clearToast } = useResumePlayback(metadata);
-  const [hasAppliedResume, setHasAppliedResume] = useState(false);
+  // Local "Resumed from M:SS" toast. With §10's resume-via-`-ss`
+  // architecture the player no longer seeks after loadedmetadata —
+  // the ffmpeg session itself starts at the resume point — so the
+  // toast fires as soon as we know the player has a non-zero offset
+  // (i.e., on first loadedmetadata where sessionStartOffset > 0).
+  const [resumeToast, setResumeToast] = useState({ show: false, message: '' });
+  const resumeToastShownRef = useRef(false);
+  const resumeToastTimerRef = useRef(null);
+
+  // Incoming-offset ref: updated synchronously on every render BEFORE
+  // any effect cleanup runs. The hls-effect's cleanup closure (which
+  // captured the OLD prop value) compares against this current value
+  // to detect "the upcoming src swap is also changing the session
+  // offset" — in which case position restoration via pendingSeekRef
+  // would land the user at the wrong real-world second.
+  const incomingOffsetRef = useRef(sessionStartOffset);
+  incomingOffsetRef.current = sessionStartOffset;
 
   // Click flash (kept from prior version)
   const [flash, setFlash] = useState(null);
@@ -331,6 +355,17 @@ export default function HlsVideo({
 
   // ─────────────────────────────────────────────────────────
   // Scrub bar — pointer events with drag support
+  //
+  // All scrubber math operates in REAL-WORLD coordinates: the bar
+  // represents [0, duration + sessionStartOffset]. The `<video>`'s
+  // currentTime is session-relative (0 = first segment, which sits at
+  // real-world second `sessionStartOffset`), so we add the offset when
+  // displaying and subtract it before setting currentTime.
+  //
+  // Cross-offset-boundary seek (user drags BEFORE `sessionStartOffset`)
+  // is not yet supported — we'd need to mint a fresh session at the
+  // earlier real-world position. For now we clamp to the offset; the
+  // scrubber refuses to go further left. TODO: cross-boundary seek.
   // ─────────────────────────────────────────────────────────
   const computeBarSeek = useCallback((clientX) => {
     const el = progressRef.current;
@@ -338,9 +373,10 @@ export default function HlsVideo({
     if (!el || !v) return 0;
     const rect = el.getBoundingClientRect();
     const pct = Math.max(0, Math.min(1, (clientX - rect.left) / rect.width));
-    const dur = isFinite(v.duration) && v.duration > 0 ? v.duration : 0;
-    return pct * dur;
-  }, []);
+    const sessionDur = isFinite(v.duration) && v.duration > 0 ? v.duration : 0;
+    const totalDur = sessionDur + (sessionStartOffset || 0);
+    return pct * totalDur;        // REAL-world target time in seconds
+  }, [sessionStartOffset]);
 
   const onProgressMove = useCallback((e) => {
     const t = computeBarSeek(e.clientX);
@@ -350,14 +386,27 @@ export default function HlsVideo({
 
   const onProgressLeave = useCallback(() => setHoverTime(null), []);
 
+  const seekToReal = useCallback((realSec) => {
+    const v = videoRef.current;
+    if (!v) return;
+    const off = sessionStartOffset || 0;
+    if (realSec < off) {
+      // Below current session's start — clamp. TODO: mint a new session
+      // at `realSec` to enable backward cross-boundary scrubbing.
+      seekTo(0);
+      return;
+    }
+    seekTo(realSec - off);
+  }, [seekTo, sessionStartOffset]);
+
   const onProgressPointerDown = useCallback((e) => {
     e.preventDefault();
     const t = computeBarSeek(e.clientX);
-    seekTo(t);
+    seekToReal(t);
     // Drag-to-scrub: capture pointer and keep updating as user moves.
     const id = e.pointerId;
     progressRef.current?.setPointerCapture?.(id);
-    const move = (ev) => seekTo(computeBarSeek(ev.clientX));
+    const move = (ev) => seekToReal(computeBarSeek(ev.clientX));
     const up = (ev) => {
       progressRef.current?.removeEventListener?.('pointermove', move);
       progressRef.current?.removeEventListener?.('pointerup', up);
@@ -367,7 +416,7 @@ export default function HlsVideo({
     progressRef.current?.addEventListener?.('pointermove', move);
     progressRef.current?.addEventListener?.('pointerup', up);
     progressRef.current?.addEventListener?.('pointercancel', up);
-  }, [computeBarSeek, seekTo]);
+  }, [computeBarSeek, seekToReal]);
 
   // ─────────────────────────────────────────────────────────
   // Volume slider — same drag pattern, simpler
@@ -451,10 +500,25 @@ export default function HlsVideo({
       setIsSwitching(false);
       setSwitchTargetLabel(null);
 
-      // Apply resume position from Continue Watching (only once per session)
-      if (!hasAppliedResume && !seek) {
-        applyResume(v);
-        setHasAppliedResume(true);
+      // Resume toast — "Resumed from M:SS" fired once per mount when the
+      // session was spawned with a non-zero startOffset (Continue Watching
+      // resume baked into ffmpeg via `-ss`). No client-side seek is needed
+      // because the playlist's first segment IS the resume point.
+      if (
+        !resumeToastShownRef.current
+        && sessionStartOffset > 0
+      ) {
+        resumeToastShownRef.current = true;
+        const mins = Math.floor(sessionStartOffset / 60);
+        const secs = Math.floor(sessionStartOffset % 60);
+        setResumeToast({
+          show: true,
+          message: `Resumed from ${mins}:${secs.toString().padStart(2, '0')}`,
+        });
+        if (resumeToastTimerRef.current) clearTimeout(resumeToastTimerRef.current);
+        resumeToastTimerRef.current = setTimeout(() => {
+          setResumeToast((p) => ({ ...p, show: false }));
+        }, 3000);
       }
     };
     const onVolumeChange = () => { setVolume(v.volume); setMuted(v.muted); };
@@ -572,7 +636,11 @@ export default function HlsVideo({
           showSwitchToast(`Couldn't switch to ${failedLabel} — staying on ${prevLabel}.`);
           if (pending.prevUrl && onQualityChangeRef.current) {
             revertingRef.current = true;
-            onQualityChangeRef.current(pending.prevLabel, pending.prevUrl);
+            // Revert path: pass a minimal target (no directUrl) and
+            // realTime=null so the parent treats it as an in-place swap
+            // (no new-session creation, no offset change). HlsVideo's
+            // pendingSeekRef restores the user to where they were.
+            onQualityChangeRef.current(pending.prevLabel, { streamUrl: pending.prevUrl }, null);
           }
         }, SWITCH_TIMEOUT_MS);
       } else {
@@ -590,6 +658,7 @@ export default function HlsVideo({
   useEffect(() => () => {
     if (switchTimerRef.current) clearTimeout(switchTimerRef.current);
     if (switchToastTimerRef.current) clearTimeout(switchToastTimerRef.current);
+    if (resumeToastTimerRef.current) clearTimeout(resumeToastTimerRef.current);
   }, []);
 
   // ─────────────────────────────────────────────────────────
@@ -642,10 +711,19 @@ export default function HlsVideo({
       prevLabel: activeQualityLabel,
     };
     setSwitchTargetLabel(label === 'Auto' ? `Auto · ${target.label}` : label);
+    // Real-world second the viewer is currently at — used by the parent
+    // to mint a brand-new HLS session that starts exactly there. Null if
+    // we can't read the <video> (rare) or the resolver didn't expose a
+    // directUrl for this option (legacy); the parent falls back to the
+    // pre-built streamUrl in those cases.
+    const v = videoRef.current;
+    const realTime = v && target.directUrl
+      ? (v.currentTime || 0) + (sessionStartOffset || 0)
+      : null;
     if (onQualityChangeRef.current) {
-      onQualityChangeRef.current(label, target.streamUrl);
+      onQualityChangeRef.current(label, target, realTime);
     }
-  }, [qualityOptions, src, activeQualityLabel]);
+  }, [qualityOptions, src, activeQualityLabel, sessionStartOffset]);
 
   // ─────────────────────────────────────────────────────────
   // hls.js lifecycle (UNCHANGED — playback engine)
@@ -737,34 +815,57 @@ export default function HlsVideo({
       disposed = true;
       // ── Capture playback position BEFORE we destroy the player ────
       // video.load() (a few lines down) resets currentTime to 0, so if we
-      // want to restore it on the next mount (e.g., for a quality swap)
-      // we must snapshot it first. pendingSeekRef is read by the
-      // loadedmetadata handler once the new source is ready.
+      // want to restore it on the next mount (e.g., a quality swap that
+      // keeps the SAME session offset) we must snapshot it first.
+      // pendingSeekRef is read by the loadedmetadata handler once the new
+      // source is ready.
+      //
+      // Special case: when the upcoming render also changes
+      // `sessionStartOffset` (because the parent minted a brand-new HLS
+      // session at a different real-world second — see
+      // VideoPlayer.onQualityChange's POST /api/stream/hls/session), the
+      // new session's `currentTime = 0` ALREADY corresponds to the
+      // target real-world second. Restoring the OLD session's
+      // `currentTime` would drop the user 30-60 minutes ahead of where
+      // they actually are. We detect this by comparing the cleanup's
+      // closed-over `sessionStartOffset` (the OLD prop) against
+      // `incomingOffsetRef.current` (updated synchronously during the
+      // NEW render). If they differ, skip the restore.
       try {
         const v = videoRef.current;
         if (v) {
-          pendingSeekRef.current = v.currentTime || 0;
-          pendingPlayRef.current = !v.paused;
+          const offsetWillChange = incomingOffsetRef.current !== sessionStartOffset;
+          if (offsetWillChange) {
+            pendingSeekRef.current = null;        // fresh session at new position
+            pendingPlayRef.current = !v.paused;   // preserve play/pause
+          } else {
+            pendingSeekRef.current = v.currentTime || 0;
+            pendingPlayRef.current = !v.paused;
+          }
         }
       } catch (_) {}
       if (hls) { try { hls.destroy(); } catch (_) {} hlsRef.current = null; }
       if (detachNative) detachNative();
       try { video.removeAttribute('src'); video.load(); } catch (_) {}
     };
-  }, [src, autoPlay]);
+  }, [src, autoPlay, sessionStartOffset]);
 
   // ─────────────────────────────────────────────────────────
   // Derived render values
   // ─────────────────────────────────────────────────────────
   const playedPct = useMemo(() => {
-    if (!duration) return 0;
-    return Math.min(100, (currentTime / duration) * 100);
-  }, [currentTime, duration]);
+    const off = sessionStartOffset || 0;
+    const totalDur = duration + off;
+    if (totalDur <= 0) return 0;
+    return Math.min(100, ((currentTime + off) / totalDur) * 100);
+  }, [currentTime, duration, sessionStartOffset]);
 
   const bufferedPct = useMemo(() => {
-    if (!duration) return 0;
-    return Math.min(100, (bufferedEnd / duration) * 100);
-  }, [bufferedEnd, duration]);
+    const off = sessionStartOffset || 0;
+    const totalDur = duration + off;
+    if (totalDur <= 0) return 0;
+    return Math.min(100, ((bufferedEnd + off) / totalDur) * 100);
+  }, [bufferedEnd, duration, sessionStartOffset]);
 
   const VolIcon = muted || volume === 0 ? VolumeX : (volume < 0.5 ? Volume1 : Volume2);
 
@@ -806,13 +907,24 @@ export default function HlsVideo({
         {selectedSubtitle && subtitleTracks && subtitleTracks.length > 0 && (() => {
           const track = subtitleTracks.find(t => t.language === selectedSubtitle);
           if (!track) return null;
+          // Subtitle cue times are absolute against the SOURCE file (real
+          // world). When the current HLS session was spawned with a
+          // non-zero `sessionStartOffset`, the <video>'s currentTime is
+          // session-relative, so we must shift the cues by -offset on the
+          // server before delivery so they line up with what the user
+          // actually sees. /api/subtitles/download honours `?offset=`.
+          const offsetParam = (sessionStartOffset || 0) > 0
+            ? `&offset=${sessionStartOffset}`
+            : '';
           return (
             <track
-              key={track.file_id}
+              // Re-create the track when offset changes so the cues are
+              // re-fetched with the new shift applied.
+              key={`${track.file_id}-${sessionStartOffset || 0}`}
               kind="subtitles"
               srcLang={track.language}
               label={track.language_name || track.language}
-              src={`/api/subtitles/download?file_id=${track.file_id}`}
+              src={`/api/subtitles/download?file_id=${track.file_id}${offsetParam}`}
               default
             />
           );
@@ -981,7 +1093,7 @@ export default function HlsVideo({
 
             {/* Time */}
             <div className="text-base sm:text-sm font-mono tabular-nums opacity-90 whitespace-nowrap">
-              {formatTime(currentTime)} <span className="opacity-60">/ {formatTime(duration)}</span>
+              {formatTime(currentTime + (sessionStartOffset || 0))} <span className="opacity-60">/ {formatTime(duration + (sessionStartOffset || 0))}</span>
             </div>
 
             <div className="flex-1" />
