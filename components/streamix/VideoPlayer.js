@@ -379,12 +379,16 @@ const VideoPlayer = ({
         const available = data.results || [];
         console.log(`[Subtitles] Found ${available.length} languages for ${mediaType} ${tmdbId}`);
 
-        // Restore last selected language if available
+        // Restore last selected language if available, default to OFF
         let selected = null;
         try {
           const lastLang = window.localStorage.getItem(subtitleLangKey);
-          if (lastLang && available.some(s => s.language === lastLang)) {
+          // Only restore if: (a) not 'off', (b) exact language is available
+          if (lastLang && lastLang !== 'off' && available.some(s => s.language === lastLang)) {
             selected = lastLang;
+            console.log(`[Subtitles] Auto-enabled last language: ${lastLang}`);
+          } else {
+            console.log(`[Subtitles] Defaulting to OFF (last: ${lastLang || 'none'})`);
           }
         } catch (_) {}
 
@@ -403,13 +407,16 @@ const VideoPlayer = ({
     return () => { cancelled = true; };
   }, [tmdbId, mediaType, season, episode]);
 
-  // Persist selected subtitle language
+  // Persist selected subtitle language (including 'off')
   useEffect(() => {
-    if (subtitles.selected) {
-      try { 
-        window.localStorage.setItem(subtitleLangKey, subtitles.selected); 
-      } catch (_) {}
-    }
+    try {
+      if (subtitles.selected) {
+        window.localStorage.setItem(subtitleLangKey, subtitles.selected);
+      } else {
+        // Save 'off' when subtitles are disabled
+        window.localStorage.setItem(subtitleLangKey, 'off');
+      }
+    } catch (_) {}
   }, [subtitles.selected]);
 
   const handleIframeLoad = () => {

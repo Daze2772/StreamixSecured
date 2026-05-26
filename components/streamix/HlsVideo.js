@@ -160,7 +160,8 @@ export default function HlsVideo({
   const [playbackRate, setPlaybackRate] = useState(1);
   const [controlsVisible, setControlsVisible] = useState(true);
   const [settingsOpen, setSettingsOpen] = useState(false);
-  const [settingsView, setSettingsView] = useState('main'); // main | speed | quality | subtitles
+  const [settingsView, setSettingsView] = useState('main'); // main | speed | quality
+  const [subtitlesOpen, setSubtitlesOpen] = useState(false); // CC popover state
   const [hoverTime, setHoverTime] = useState(null); // {sec, x} | null
   const [isBuffering, setIsBuffering] = useState(false);
 
@@ -898,41 +899,90 @@ export default function HlsVideo({
               {playbackRate}×
             </button>
 
-            {/* CC/Subtitles quick toggle - ALWAYS render */}
-            <button
-              aria-label={selectedSubtitle ? 'Disable subtitles' : 'Subtitles'}
-              onClick={() => {
-                if (subtitlesLoading) return; // Ignore clicks while loading
-                if (subtitleTracks && subtitleTracks.length > 0) {
-                  if (selectedSubtitle) {
-                    // Turn off
-                    if (onSubtitleChange) onSubtitleChange(null);
-                  } else {
-                    // Turn on - use first available language
-                    if (onSubtitleChange) onSubtitleChange(subtitleTracks[0].language);
-                  }
-                } else {
-                  // No tracks available - open settings to show error/empty state
-                  setSettingsOpen(true);
-                  setSettingsView('subtitles');
-                }
-              }}
-              className={`p-1.5 rounded hover:bg-white/15 transition-colors ${selectedSubtitle ? 'bg-white/15' : ''} ${subtitlesLoading ? 'opacity-50' : ''}`}
-              title={
-                subtitlesLoading 
-                  ? 'Loading subtitles...'
-                  : subtitlesError
-                    ? subtitlesError
-                    : selectedSubtitle 
-                      ? `Subtitles: ${subtitleTracks?.find(t => t.language === selectedSubtitle)?.language_name || selectedSubtitle}` 
-                      : subtitleTracks && subtitleTracks.length > 0
-                        ? 'Enable subtitles'
-                        : 'No subtitles available'
-              }
-              disabled={subtitlesLoading}
-            >
-              <CCIcon size={22} />
-            </button>
+            {/* CC/Subtitles popover - ALWAYS render */}
+            <div className="relative">
+              <button
+                aria-label="Subtitles"
+                onClick={() => setSubtitlesOpen((o) => !o)}
+                className={`p-1.5 rounded hover:bg-white/15 transition-colors ${
+                  selectedSubtitle ? 'bg-amber-500/20 text-amber-300' : 'opacity-60 hover:opacity-100'
+                } ${subtitlesLoading ? 'opacity-50' : ''}`}
+                disabled={subtitlesLoading}
+                title={selectedSubtitle 
+                  ? `Subtitles: ${subtitleTracks?.find(t => t.language === selectedSubtitle)?.language_name || selectedSubtitle}` 
+                  : 'Subtitles'}
+              >
+                <CCIcon size={22} />
+              </button>
+              
+              {/* CC Popover */}
+              {subtitlesOpen && (
+                <div className="absolute bottom-12 right-0 w-56 rounded-lg bg-black/95 backdrop-blur-md text-white shadow-2xl border border-white/10 overflow-hidden">
+                  <div className="py-1">
+                    {/* Loading state */}
+                    {subtitlesLoading && (
+                      <div className="px-3 py-4 text-center text-sm opacity-60 flex items-center justify-center gap-2">
+                        <Loader2 size={16} className="animate-spin" />
+                        Loading subtitles...
+                      </div>
+                    )}
+                    
+                    {/* Error state */}
+                    {!subtitlesLoading && subtitlesError && (
+                      <div className="px-3 py-4 text-center text-sm text-yellow-400 leading-snug">
+                        {subtitlesError}
+                      </div>
+                    )}
+                    
+                    {/* Empty state */}
+                    {!subtitlesLoading && !subtitlesError && (!subtitleTracks || subtitleTracks.length === 0) && (
+                      <div className="px-3 py-4 text-center text-sm opacity-60">
+                        No subtitles available for this title
+                      </div>
+                    )}
+                    
+                    {/* Loaded state with options */}
+                    {!subtitlesLoading && !subtitlesError && subtitleTracks && subtitleTracks.length > 0 && (
+                      <>
+                        {/* Off option */}
+                        <button
+                          onClick={() => { 
+                            if (onSubtitleChange) onSubtitleChange(null);
+                            setSubtitlesOpen(false);
+                          }}
+                          className={`flex items-center w-full px-3 py-2 hover:bg-white/10 text-sm ${!selectedSubtitle ? 'bg-white/5' : ''}`}
+                        >
+                          <span className="w-5">
+                            {!selectedSubtitle && <Check size={14} />}
+                          </span>
+                          <span>Off</span>
+                        </button>
+                        
+                        {/* Language options - sorted by downloads desc */}
+                        {[...subtitleTracks]
+                          .sort((a, b) => (b.downloads || 0) - (a.downloads || 0))
+                          .map((track) => (
+                            <button
+                              key={track.language}
+                              onClick={() => { 
+                                if (onSubtitleChange) onSubtitleChange(track.language);
+                                setSubtitlesOpen(false);
+                              }}
+                              className={`flex items-center w-full px-3 py-2 hover:bg-white/10 text-sm ${selectedSubtitle === track.language ? 'bg-white/5' : ''}`}
+                              title={`${track.downloads.toLocaleString()} downloads`}
+                            >
+                              <span className="w-5">
+                                {selectedSubtitle === track.language && <Check size={14} />}
+                              </span>
+                              <span className="flex-1 text-left truncate">{track.language_name || track.language}</span>
+                            </button>
+                          ))}
+                      </>
+                    )}
+                  </div>
+                </div>
+              )}
+            </div>
 
             {/* Settings */}
             <div className="relative">
@@ -965,23 +1015,6 @@ export default function HlsVideo({
                                 ? (autoTargetLabel ? `Auto · ${autoTargetLabel}` : 'Auto')
                                 : activeQualityLabel)
                             : qualityLabel}
-                        </span>
-                      </button>
-                      <button
-                        onClick={() => setSettingsView('subtitles')}
-                        className="flex items-center justify-between w-full px-3 py-2 hover:bg-white/10 text-sm"
-                      >
-                        <span>Subtitles</span>
-                        <span className="opacity-60 text-xs truncate max-w-[140px]">
-                          {subtitlesLoading 
-                            ? 'Loading...'
-                            : subtitlesError
-                              ? 'Error'
-                              : selectedSubtitle 
-                                ? (subtitleTracks?.find(t => t.language === selectedSubtitle)?.language_name || selectedSubtitle)
-                                : subtitleTracks && subtitleTracks.length > 0
-                                  ? 'Off'
-                                  : 'None'}
                         </span>
                       </button>
                     </div>
@@ -1055,75 +1088,6 @@ export default function HlsVideo({
                           <div className="px-3 pb-2 pt-1 text-[11px] opacity-50 leading-snug">
                             Multi-bitrate switching not available — this stream is transcoded on-the-fly at a single quality.
                           </div>
-                        </>
-                      )}
-                    </div>
-                  )}
-                  {settingsView === 'subtitles' && (
-                    <div className="py-1">
-                      <button
-                        onClick={() => setSettingsView('main')}
-                        className="w-full px-3 py-2 text-xs opacity-60 hover:opacity-100 text-left"
-                      >
-                        ← Back
-                      </button>
-                      
-                      {/* Loading state */}
-                      {subtitlesLoading && (
-                        <div className="px-3 py-4 text-center text-sm opacity-60 flex items-center justify-center gap-2">
-                          <Loader2 size={16} className="animate-spin" />
-                          Loading subtitles...
-                        </div>
-                      )}
-                      
-                      {/* Error state */}
-                      {!subtitlesLoading && subtitlesError && (
-                        <div className="px-3 py-4 text-center text-sm text-yellow-400">
-                          {subtitlesError}
-                        </div>
-                      )}
-                      
-                      {/* Empty state (no subtitles available) */}
-                      {!subtitlesLoading && !subtitlesError && (!subtitleTracks || subtitleTracks.length === 0) && (
-                        <div className="px-3 py-4 text-center text-sm opacity-60">
-                          No subtitles available for this title
-                        </div>
-                      )}
-                      
-                      {/* Loaded state with options */}
-                      {!subtitlesLoading && !subtitlesError && subtitleTracks && subtitleTracks.length > 0 && (
-                        <>
-                          {/* Off option */}
-                          <button
-                            onClick={() => { 
-                              if (onSubtitleChange) onSubtitleChange(null);
-                              setSettingsOpen(false);
-                            }}
-                            className={`flex items-center w-full px-3 py-2 hover:bg-white/10 text-sm ${!selectedSubtitle ? 'bg-white/5' : ''}`}
-                          >
-                            <span className="w-5">
-                              {!selectedSubtitle && <Check size={14} />}
-                            </span>
-                            <span>Off</span>
-                          </button>
-                          {/* Language options */}
-                          {subtitleTracks.map((track) => (
-                            <button
-                              key={track.language}
-                              onClick={() => { 
-                                if (onSubtitleChange) onSubtitleChange(track.language);
-                                setSettingsOpen(false);
-                              }}
-                              className={`flex items-center w-full px-3 py-2 hover:bg-white/10 text-sm ${selectedSubtitle === track.language ? 'bg-white/5' : ''}`}
-                              title={`${track.downloads.toLocaleString()} downloads`}
-                            >
-                              <span className="w-5">
-                                {selectedSubtitle === track.language && <Check size={14} />}
-                              </span>
-                              <span className="flex-1 text-left truncate">{track.language_name || track.language}</span>
-                              <span className="opacity-40 text-[10px] uppercase">{track.language}</span>
-                            </button>
-                          ))}
                         </>
                       )}
                     </div>
