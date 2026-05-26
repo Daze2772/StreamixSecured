@@ -3,9 +3,10 @@
 import { useEffect, useRef, useState, useCallback, useMemo } from 'react';
 import {
   Play, Pause, Volume2, VolumeX, Volume1, Maximize, Minimize,
-  PictureInPicture2, Settings, Check, Loader2, Subtitles as CCIcon,
+  PictureInPicture2, Settings, Check, Loader2, Subtitles as CCIcon, Languages,
 } from 'lucide-react';
 import { useProgressTracking } from '@/lib/useProgressTracking';
+import { getAudioLanguageName, formatChannels } from '@/lib/audioLanguageNames';
 
 /**
  * HlsVideo — custom Tailwind player on top of hls.js
@@ -111,6 +112,14 @@ export default function HlsVideo({
   // segments on demand. Null if ffprobe failed → fallback to the old
   // growing-duration behavior (video.duration + sessionStartOffset).
   sourceDuration = null,
+  // ── Audio tracks (Phase 2) ───────────────────────────────────
+  // audioStreams: [{ audioIndex, language, codec, channels, title }]
+  // Multi-audio MKVs expose all detected streams for user selection.
+  // currentAudioIndex: actively-playing track index (0-based)
+  // onAudioChange: (newIndex) => void — triggers mid-playback audio switch
+  audioStreams = [],
+  currentAudioIndex = null,
+  onAudioChange = null,
   // ── Subtitles ────────────────────────────────────────────────
   // subtitleTracks: [{ language, language_name, file_id }]
   // selectedSubtitle: language code ('en', 'es', etc.) or null for off
@@ -186,6 +195,7 @@ export default function HlsVideo({
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [settingsView, setSettingsView] = useState('main'); // main | speed | quality
   const [subtitlesOpen, setSubtitlesOpen] = useState(false); // CC popover state
+  const [audioOpen, setAudioOpen] = useState(false); // Audio popover state (Phase 2)
   const [hoverTime, setHoverTime] = useState(null); // {sec, x} | null
   const [isBuffering, setIsBuffering] = useState(false);
 
@@ -894,15 +904,16 @@ export default function HlsVideo({
 
   const VolIcon = muted || volume === 0 ? VolumeX : (volume < 0.5 ? Volume1 : Volume2);
 
-  // True when ANY player menu (CC popover, Settings tree) is open. Used to:
+  // True when ANY player menu (CC popover, Settings tree, Audio popover) is open. Used to:
   //  - keep controls visible (effectiveVisible)
   //  - hold off the mouse-leave auto-hide
   //  - render the tap-capture backdrop that closes the menu without
   //    also toggling play/pause on the same tap
-  const anyMenuOpen = settingsOpen || subtitlesOpen;
+  const anyMenuOpen = settingsOpen || subtitlesOpen || audioOpen;
   const closeAllMenus = useCallback(() => {
     setSettingsOpen(false);
     setSubtitlesOpen(false);
+    setAudioOpen(false);
   }, []);
 
   // Keep controls visible while a menu is open
@@ -1140,7 +1151,7 @@ export default function HlsVideo({
             <div className="relative">
               <button
                 aria-label="Subtitles"
-                onClick={() => { setSubtitlesOpen((o) => !o); setSettingsOpen(false); }}
+                onClick={() => { setSubtitlesOpen((o) => !o); setSettingsOpen(false); setAudioOpen(false); }}
                 className={`h-11 w-11 sm:h-9 sm:w-9 grid place-items-center rounded hover:bg-white/15 transition-colors ${
                   selectedSubtitle ? 'bg-amber-500/20 text-amber-300' : 'opacity-60 hover:opacity-100'
                 } ${subtitlesLoading ? 'opacity-50' : ''}`}
@@ -1221,11 +1232,75 @@ export default function HlsVideo({
               )}
             </div>
 
+            {/* Audio track selector - Phase 2 */}
+            {audioStreams && audioStreams.length > 1 && (
+              <div className="relative">
+                <button
+                  aria-label="Audio"
+                  onClick={() => { setAudioOpen((o) => !o); setSettingsOpen(false); setSubtitlesOpen(false); }}
+                  className={`h-11 w-11 sm:h-9 sm:w-9 grid place-items-center rounded hover:bg-white/15 transition-colors ${
+                    audioOpen ? 'bg-white/15' : 'opacity-60 hover:opacity-100'
+                  }`}
+                  title="Audio language"
+                >
+                  <Languages size={22} />
+                </button>
+                
+                {/* Audio Popover */}
+                {audioOpen && (
+                  <div className="absolute bottom-12 right-0 w-56 max-sm:max-w-[calc(100vw-2rem)] max-sm:max-h-[60vh] rounded-lg bg-black/95 backdrop-blur-md text-white shadow-2xl border border-white/10 overflow-hidden">
+                    <div className="py-2 max-sm:overflow-y-auto max-sm:max-h-[60vh] overscroll-contain">
+                      {audioStreams
+                        .sort((a, b) => {
+                          // Known languages first
+                          const aHasLang = !!a.language;
+                          const bHasLang = !!b.language;
+                          if (aHasLang !== bHasLang) return bHasLang ? 1 : -1;
+                          // English first among known langs
+                          if (a.language === 'eng' || a.language === 'en') return -1;
+                          if (b.language === 'eng' || b.language === 'en') return 1;
+                          // Alphabetical for others
+                          return (a.language || '').localeCompare(b.language || '');
+                        })
+                        .map((stream) => {
+                          const langName = getAudioLanguageName(stream.language, stream.audioIndex);
+                          const channels = formatChannels(stream.channels);
+                          const isActive = stream.audioIndex === currentAudioIndex;
+                          return (
+                            <button
+                              key={stream.audioIndex}
+                              onClick={() => {
+                                if (onAudioChange) onAudioChange(stream.audioIndex);
+                                setAudioOpen(false);
+                                // Save to localStorage
+                                if (stream.language) {
+                                  try {
+                                    localStorage.setItem('streamix.audioLang', stream.language);
+                                  } catch (e) {
+                                    console.warn('[Audio] localStorage save failed:', e);
+                                  }
+                                }
+                              }}
+                              className={`flex items-center gap-2 w-full px-3 py-2 hover:bg-white/10 text-sm ${isActive ? 'bg-white/5' : ''}`}
+                            >
+                              <span className="flex-1 text-left">
+                                {langName} · {channels}
+                              </span>
+                              {isActive && <Check size={14} className="text-green-400 flex-shrink-0" />}
+                            </button>
+                          );
+                        })}
+                    </div>
+                  </div>
+                )}
+              </div>
+            )}
+
             {/* Settings */}
             <div className="relative">
               <button
                 aria-label="Settings"
-                onClick={() => { setSettingsOpen((o) => !o); setSubtitlesOpen(false); setSettingsView('main'); }}
+                onClick={() => { setSettingsOpen((o) => !o); setSubtitlesOpen(false); setAudioOpen(false); setSettingsView('main'); }}
                 className={`h-11 w-11 sm:h-9 sm:w-9 grid place-items-center rounded hover:bg-white/15 transition-colors ${settingsOpen ? 'bg-white/15' : ''}`}
               >
                 <Settings size={22} className={settingsOpen ? 'rotate-45 transition-transform' : 'transition-transform'} />
