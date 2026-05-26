@@ -101,6 +101,16 @@ const VideoPlayer = ({
   });
   const premiumCacheRef = useRef(new Map());
 
+  // Subtitles state
+  const [subtitles, setSubtitles] = useState({ 
+    available: [], // [{ file_id, language, language_name, downloads }]
+    selected: null, // language code ('en', 'es', etc.) or null for off
+    loading: false,
+    error: null,
+    quotaExhausted: false
+  });
+  const subtitleLangKey = 'streamix:subtitleLang';
+
   const timerRef = useRef(null);
   const triedAutoSwitchRef = useRef(new Set());
 
@@ -320,6 +330,83 @@ const VideoPlayer = ({
     try { window.localStorage.setItem(blockerKey, popupBlock ? '1' : '0'); } catch (_) {}
   }, [popupBlock]);
 
+  // Fetch subtitles when media changes
+  useEffect(() => {
+    if (!tmdbId) return;
+
+    let cancelled = false;
+    setSubtitles(prev => ({ ...prev, loading: true, error: null, quotaExhausted: false }));
+
+    const params = new URLSearchParams({
+      tmdb_id: String(tmdbId),
+      type: mediaType,
+      languages: 'en,es,fr,de,it,pt,ru,ja,ko,zh' // Top 10 languages
+    });
+
+    if (mediaType === 'tv') {
+      params.set('season', String(season));
+      params.set('episode', String(episode));
+    }
+
+    fetch(`/api/subtitles/search?${params.toString()}`)
+      .then(async (r) => {
+        const data = await r.json().catch(() => ({}));
+        if (cancelled) return;
+
+        if (!r.ok) {
+          if (r.status === 429 || data.error === 'daily_quota_exhausted') {
+            setSubtitles(prev => ({ 
+              ...prev, 
+              loading: false, 
+              quotaExhausted: true,
+              error: 'OpenSubtitles daily quota exhausted. Try again tomorrow.'
+            }));
+          } else {
+            setSubtitles(prev => ({ 
+              ...prev, 
+              loading: false, 
+              error: data.error || 'Subtitle search failed' 
+            }));
+          }
+          return;
+        }
+
+        const available = data.results || [];
+        console.log(`[Subtitles] Found ${available.length} languages for ${mediaType} ${tmdbId}`);
+
+        // Restore last selected language if available
+        let selected = null;
+        try {
+          const lastLang = window.localStorage.getItem(subtitleLangKey);
+          if (lastLang && available.some(s => s.language === lastLang)) {
+            selected = lastLang;
+          }
+        } catch (_) {}
+
+        setSubtitles({ available, selected, loading: false, error: null, quotaExhausted: false });
+      })
+      .catch((err) => {
+        if (cancelled) return;
+        console.error('[Subtitles] Search error:', err);
+        setSubtitles(prev => ({ 
+          ...prev, 
+          loading: false, 
+          error: err.message || 'Network error' 
+        }));
+      });
+
+    return () => { cancelled = true; };
+  }, [tmdbId, mediaType, season, episode]);
+
+  // Persist selected subtitle language
+  useEffect(() => {
+    if (subtitles.selected) {
+      try { 
+        window.localStorage.setItem(subtitleLangKey, subtitles.selected); 
+      } catch (_) {}
+    }
+  }, [subtitles.selected]);
+
   const handleIframeLoad = () => {
     if (timerRef.current) clearTimeout(timerRef.current);
     updateStatus(serverIdx, STATUS.OK);
@@ -463,6 +550,11 @@ const VideoPlayer = ({
                   // original primary pick, which is intentional (it's a
                   // brand mark, not a live indicator).
                   setPremium((p) => ({ ...p, url }));
+                }}
+                subtitleTracks={subtitles.available}
+                selectedSubtitle={subtitles.selected}
+                onSubtitleChange={(lang) => {
+                  setSubtitles((prev) => ({ ...prev, selected: lang }));
                 }}
                 onReady={() => updateStatus(serverIdx, STATUS.OK)}
                 onFatal={() => {

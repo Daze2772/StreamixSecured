@@ -3,7 +3,7 @@
 import { useEffect, useRef, useState, useCallback, useMemo } from 'react';
 import {
   Play, Pause, Volume2, VolumeX, Volume1, Maximize, Minimize,
-  PictureInPicture2, Settings, Check, Loader2,
+  PictureInPicture2, Settings, Check, Loader2, Subtitles as CCIcon,
 } from 'lucide-react';
 
 /**
@@ -95,6 +95,13 @@ export default function HlsVideo({
   // null/empty, the legacy "Source · 1080p" single-quality block renders.
   qualityOptions = null,
   onQualityChange = null,
+  // ── Subtitles ────────────────────────────────────────────────
+  // subtitleTracks: [{ language, language_name, file_id }]
+  // selectedSubtitle: language code ('en', 'es', etc.) or null for off
+  // onSubtitleChange: (language) => void
+  subtitleTracks = null,
+  selectedSubtitle = null,
+  onSubtitleChange = null,
 }) {
   const videoRef = useRef(null);
   const wrapRef = useRef(null);
@@ -149,7 +156,7 @@ export default function HlsVideo({
   const [playbackRate, setPlaybackRate] = useState(1);
   const [controlsVisible, setControlsVisible] = useState(true);
   const [settingsOpen, setSettingsOpen] = useState(false);
-  const [settingsView, setSettingsView] = useState('main'); // main | speed | quality
+  const [settingsView, setSettingsView] = useState('main'); // main | speed | quality | subtitles
   const [hoverTime, setHoverTime] = useState(null); // {sec, x} | null
   const [isBuffering, setIsBuffering] = useState(false);
 
@@ -442,6 +449,24 @@ export default function HlsVideo({
   }, []);
 
   // ─────────────────────────────────────────────────────────
+  // Subtitle track management
+  // ─────────────────────────────────────────────────────────
+  useEffect(() => {
+    const v = videoRef.current;
+    if (!v || !v.textTracks) return;
+
+    // Enable/disable tracks based on selectedSubtitle
+    for (let i = 0; i < v.textTracks.length; i++) {
+      const track = v.textTracks[i];
+      if (selectedSubtitle && track.language === selectedSubtitle) {
+        track.mode = 'showing';
+      } else {
+        track.mode = 'hidden';
+      }
+    }
+  }, [selectedSubtitle]);
+
+  // ─────────────────────────────────────────────────────────
   // Quality swap detection — runs whenever the `src` prop changes.
   // Three cases to handle:
   //   1. First mount: prevSrcRef is null → nothing to do, just remember src.
@@ -694,7 +719,19 @@ export default function HlsVideo({
         onClick={handleVideoClick}
         className="w-full h-full object-contain bg-black"
         style={{ cursor: effectiveVisible ? 'pointer' : 'none' }}
-      />
+      >
+        {/* Subtitle tracks */}
+        {subtitleTracks && subtitleTracks.map((track) => (
+          <track
+            key={track.file_id}
+            kind="subtitles"
+            srcLang={track.language}
+            label={track.language_name || track.language}
+            src={`/api/subtitles/download?file_id=${track.file_id}`}
+            default={track.language === selectedSubtitle}
+          />
+        ))}
+      </video>
 
       {/* Center play/pause flash on click toggle */}
       {flash && (
@@ -847,6 +884,28 @@ export default function HlsVideo({
               {playbackRate}×
             </button>
 
+            {/* CC/Subtitles quick toggle */}
+            {subtitleTracks && subtitleTracks.length > 0 && (
+              <button
+                aria-label={selectedSubtitle ? 'Disable subtitles' : 'Enable subtitles'}
+                onClick={() => {
+                  if (selectedSubtitle) {
+                    // Turn off
+                    if (onSubtitleChange) onSubtitleChange(null);
+                  } else {
+                    // Turn on - use first available language
+                    if (onSubtitleChange) onSubtitleChange(subtitleTracks[0].language);
+                  }
+                }}
+                className={`p-1.5 rounded hover:bg-white/15 transition-colors ${selectedSubtitle ? 'bg-white/15' : ''}`}
+                title={selectedSubtitle 
+                  ? `Subtitles: ${subtitleTracks.find(t => t.language === selectedSubtitle)?.language_name || selectedSubtitle}` 
+                  : 'Enable subtitles'}
+              >
+                <CCIcon size={22} />
+              </button>
+            )}
+
             {/* Settings */}
             <div className="relative">
               <button
@@ -880,6 +939,19 @@ export default function HlsVideo({
                             : qualityLabel}
                         </span>
                       </button>
+                      {subtitleTracks && subtitleTracks.length > 0 && (
+                        <button
+                          onClick={() => setSettingsView('subtitles')}
+                          className="flex items-center justify-between w-full px-3 py-2 hover:bg-white/10 text-sm"
+                        >
+                          <span>Subtitles</span>
+                          <span className="opacity-60 text-xs truncate max-w-[140px]">
+                            {selectedSubtitle 
+                              ? (subtitleTracks.find(t => t.language === selectedSubtitle)?.language_name || selectedSubtitle)
+                              : 'Off'}
+                          </span>
+                        </button>
+                      )}
                     </div>
                   )}
                   {settingsView === 'speed' && (
@@ -953,6 +1025,47 @@ export default function HlsVideo({
                           </div>
                         </>
                       )}
+                    </div>
+                  )}
+                  {settingsView === 'subtitles' && (
+                    <div className="py-1">
+                      <button
+                        onClick={() => setSettingsView('main')}
+                        className="w-full px-3 py-2 text-xs opacity-60 hover:opacity-100 text-left"
+                      >
+                        ← Back
+                      </button>
+                      {/* Off option */}
+                      <button
+                        onClick={() => { 
+                          if (onSubtitleChange) onSubtitleChange(null);
+                          setSettingsOpen(false);
+                        }}
+                        className={`flex items-center w-full px-3 py-2 hover:bg-white/10 text-sm ${!selectedSubtitle ? 'bg-white/5' : ''}`}
+                      >
+                        <span className="w-5">
+                          {!selectedSubtitle && <Check size={14} />}
+                        </span>
+                        <span>Off</span>
+                      </button>
+                      {/* Language options */}
+                      {subtitleTracks && subtitleTracks.map((track) => (
+                        <button
+                          key={track.language}
+                          onClick={() => { 
+                            if (onSubtitleChange) onSubtitleChange(track.language);
+                            setSettingsOpen(false);
+                          }}
+                          className={`flex items-center w-full px-3 py-2 hover:bg-white/10 text-sm ${selectedSubtitle === track.language ? 'bg-white/5' : ''}`}
+                          title={`${track.downloads.toLocaleString()} downloads`}
+                        >
+                          <span className="w-5">
+                            {selectedSubtitle === track.language && <Check size={14} />}
+                          </span>
+                          <span className="flex-1 text-left truncate">{track.language_name || track.language}</span>
+                          <span className="opacity-40 text-[10px] uppercase">{track.language}</span>
+                        </button>
+                      ))}
                     </div>
                   )}
                 </div>
