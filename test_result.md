@@ -389,3 +389,6 @@ agent_communication:
       All existing functionality intact. Both fixes working as designed.
       Premium HLS streaming is production-ready with improved content filtering
       and proper VOD playback behavior.
+
+✅ **Subtitles feature shipped** — OpenSubtitles integration complete with CC popover, localStorage persistence, and proper language name display.
+📱 **Next priority:** Mobile UI optimization for responsive player controls and touch-friendly subtitle picker.
