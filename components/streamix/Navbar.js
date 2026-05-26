@@ -71,7 +71,7 @@ const Navbar = ({ onResultClick }) => {
         </nav>
 
         <div ref={wrapperRef} className="relative">
-          <div className={`flex items-center transition-all duration-300 ${open ? 'bg-black/90 border border-white/20 w-64 md:w-80 px-3' : 'w-10 justify-center'} h-10 rounded-md`}>
+          <div className={`flex items-center transition-all duration-300 ${open ? 'bg-black/90 border border-white/20 flex-1 md:flex-none md:w-64 px-3' : 'w-10 justify-center'} h-10 rounded-md`}>
             <button
               onClick={() => { setOpen((o) => !o); setTimeout(() => inputRef.current?.focus(), 50); }}
               aria-label="Search"

@@ -789,7 +789,7 @@ const VideoPlayer = ({
                 <button
                   key={s.id}
                   onClick={() => selectServer(i)}
-                  className={`relative px-3 py-2.5 rounded-md text-sm font-semibold border transition flex items-center gap-2 text-left min-w-[160px] ${
+                  className={`relative px-2.5 py-2 sm:px-3 sm:py-2.5 rounded-md text-sm font-semibold border transition flex items-center gap-2 text-left min-w-[160px] ${
                     isActive
                       ? 'bg-gradient-to-br from-amber-500 to-yellow-600 border-amber-400 text-white shadow-lg shadow-amber-500/40 ring-2 ring-amber-300/50'
                       : st === STATUS.FAILED
@@ -799,16 +799,16 @@ const VideoPlayer = ({
                   title="Real-Debrid powered — almost ad-free. Requires RD_ADDON_MANIFEST_URL set on the server."
                 >
                   <Crown className={`w-4 h-4 flex-none ${isActive ? 'text-white' : 'text-amber-400'}`} />
-                  <span className="flex flex-col items-start leading-tight">
-                    <span className="flex items-center gap-1.5">
-                      {s.name}
-                      <span className={`text-[9px] font-bold px-1.5 py-0.5 rounded uppercase tracking-wider ${
+                  <span className="flex flex-col items-start leading-tight min-w-0 flex-1">
+                    <span className="flex items-center gap-1.5 flex-wrap">
+                      <span className="truncate">{s.name}</span>
+                      <span className={`text-[9px] font-bold px-1.5 py-0.5 rounded uppercase tracking-wider whitespace-nowrap ${
                         isActive ? 'bg-white/25 text-white' : 'bg-amber-500/20 text-amber-300'
                       }`}>
                         Almost no ads
                       </span>
                     </span>
-                    <span className="text-[10px] font-normal opacity-80">
+                    <span className="text-[10px] font-normal opacity-80 truncate w-full">
                       {s.sub}
                     </span>
                   </span>
@@ -823,7 +823,7 @@ const VideoPlayer = ({
               <button
                 key={s.id}
                 onClick={() => selectServer(i)}
-                className={`px-3 py-2.5 rounded-md text-sm font-semibold border transition flex items-center gap-2 text-left min-w-[130px] ${
+                className={`px-2.5 py-2 sm:px-3 sm:py-2.5 rounded-md text-sm font-semibold border transition flex items-center gap-2 text-left min-w-[130px] ${
                   isActive
                     ? 'bg-red-600 border-red-600 text-white shadow-lg shadow-red-600/30'
                     : st === STATUS.FAILED
@@ -832,9 +832,9 @@ const VideoPlayer = ({
                 }`}
               >
                 <StatusIcon status={st} active={isActive} />
-                <span className="flex flex-col items-start leading-tight">
-                  <span>{s.name}</span>
-                  <span className="text-[10px] font-normal opacity-80">{s.sub}</span>
+                <span className="flex flex-col items-start leading-tight min-w-0 flex-1">
+                  <span className="truncate">{s.name}</span>
+                  <span className="text-[10px] font-normal opacity-80 truncate w-full">{s.sub}</span>
                 </span>
               </button>
             );

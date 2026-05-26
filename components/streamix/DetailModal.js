@@ -124,48 +124,51 @@ const DetailModal = ({ open, onOpenChange, item, onCardClick }) => {
           </div>
 
           {/* Meta */}
-          <div className="p-5 md:p-8 grid md:grid-cols-3 gap-6">
-            <div className="md:col-span-2">
-              <div className="flex flex-wrap items-center gap-3 text-sm text-neutral-300 mb-3">
-                {data?.vote_average > 0 && (
-                  <span className="flex items-center gap-1 text-yellow-400 font-semibold">
-                    <Star className="w-4 h-4 fill-yellow-400" /> {data.vote_average.toFixed(1)}
+          <div className="p-5 md:p-8">
+            <div className="md:grid md:grid-cols-3 md:gap-6">
+              <div className="md:col-span-2">
+                <div className="flex flex-wrap items-center gap-3 text-sm text-neutral-300 mb-3">
+                  {data?.vote_average > 0 && (
+                    <span className="flex items-center gap-1 text-yellow-400 font-semibold">
+                      <Star className="w-4 h-4 fill-yellow-400" /> {data.vote_average.toFixed(1)}
+                    </span>
+                  )}
+                  {year && (
+                    <span className="flex items-center gap-1"><Calendar className="w-4 h-4" /> {year}</span>
+                  )}
+                  {runtime && (
+                    <span className="flex items-center gap-1"><Clock className="w-4 h-4" /> {runtime} min</span>
+                  )}
+                  <span className="uppercase tracking-wide text-xs px-2 py-0.5 border border-neutral-700 rounded">
+                    {mediaType === 'tv' ? 'TV Series' : 'Movie'}
                   </span>
+                  {mediaType === 'tv' && data?.number_of_seasons && (
+                    <span className="text-xs">{data.number_of_seasons} Season{data.number_of_seasons > 1 ? 's' : ''}</span>
+                  )}
+                </div>
+                <p className="text-sm md:text-base text-neutral-200 leading-relaxed">{overview || 'No overview available.'}</p>
+              </div>
+              {/* Desktop: side column, Mobile: 2-col grid below overview */}
+              <div className="text-sm space-y-3 mt-4 md:mt-0 md:block grid grid-cols-2 gap-x-4 gap-y-3">
+                {genres.length > 0 && (
+                  <div>
+                    <span className="text-neutral-500">Genres: </span>
+                    <span className="text-neutral-200">{genres.map((g) => g.name).join(', ')}</span>
+                  </div>
                 )}
-                {year && (
-                  <span className="flex items-center gap-1"><Calendar className="w-4 h-4" /> {year}</span>
+                {cast.length > 0 && (
+                  <div>
+                    <span className="text-neutral-500">Cast: </span>
+                    <span className="text-neutral-200">{cast.map((c) => c.name).join(', ')}</span>
+                  </div>
                 )}
-                {runtime && (
-                  <span className="flex items-center gap-1"><Clock className="w-4 h-4" /> {runtime} min</span>
-                )}
-                <span className="uppercase tracking-wide text-xs px-2 py-0.5 border border-neutral-700 rounded">
-                  {mediaType === 'tv' ? 'TV Series' : 'Movie'}
-                </span>
-                {mediaType === 'tv' && data?.number_of_seasons && (
-                  <span className="text-xs">{data.number_of_seasons} Season{data.number_of_seasons > 1 ? 's' : ''}</span>
+                {data?.original_language && (
+                  <div>
+                    <span className="text-neutral-500">Language: </span>
+                    <span className="text-neutral-200 uppercase">{data.original_language}</span>
+                  </div>
                 )}
               </div>
-              <p className="text-sm md:text-base text-neutral-200 leading-relaxed">{overview || 'No overview available.'}</p>
-            </div>
-            <div className="text-sm space-y-3">
-              {genres.length > 0 && (
-                <div>
-                  <span className="text-neutral-500">Genres: </span>
-                  <span className="text-neutral-200">{genres.map((g) => g.name).join(', ')}</span>
-                </div>
-              )}
-              {cast.length > 0 && (
-                <div>
-                  <span className="text-neutral-500">Cast: </span>
-                  <span className="text-neutral-200">{cast.map((c) => c.name).join(', ')}</span>
-                </div>
-              )}
-              {data?.original_language && (
-                <div>
-                  <span className="text-neutral-500">Language: </span>
-                  <span className="text-neutral-200 uppercase">{data.original_language}</span>
-                </div>
-              )}
             </div>
           </div>
 
