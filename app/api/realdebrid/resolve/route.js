@@ -352,11 +352,31 @@ export async function GET(request) {
 
     // Build an HLS playlist URL so the browser plays via hls.js — works for
     // every codec the source might have (we transcode if needed).
-    const hlsResult = await buildHlsUrl(chosen.url, {
-      filename: chosen.filename,
-      sizeBytes: chosen.sizeBytes,
-      quality: chosen.name,
-    }, startOffset);
+    //
+    // OPTIMIZATION: Don't probe Comet placeholders (known-dead streams).
+    // These return status 302 with no real URL — probing wastes 5s for
+    // nothing. Detect via emoji markers in filename/quality and return
+    // sourceDuration=null immediately.
+    const isPlaceholder = /\[(?:🔄|⚠️|❌)\]\s*Comet/i.test(chosen.filename || chosen.name || '');
+    let hlsResult;
+    if (isPlaceholder) {
+      console.log(`[RD] Skipping probe for Comet placeholder: ${chosen.filename || chosen.name}`);
+      const session = createSession(chosen.url, {
+        filename: chosen.filename,
+        sizeBytes: chosen.sizeBytes,
+        quality: chosen.name,
+      }, startOffset);
+      hlsResult = {
+        streamUrl: `/api/stream/hls/${session.id}/index.m3u8`,
+        sourceDuration: null,
+      };
+    } else {
+      hlsResult = await buildHlsUrl(chosen.url, {
+        filename: chosen.filename,
+        sizeBytes: chosen.sizeBytes,
+        quality: chosen.name,
+      }, startOffset);
+    }
 
     // ── Per-resolution quality bucket ────────────────────────────
     // For the player's "Quality" menu we want one entry per resolution
