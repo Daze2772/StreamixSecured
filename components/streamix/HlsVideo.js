@@ -103,6 +103,14 @@ export default function HlsVideo({
   // time/scrubber/saved-progress in REAL coordinates by adding this
   // offset to the <video>'s native currentTime + duration.
   sessionStartOffset = 0,
+  // ── Source duration (FIXED denominator) ──────────────────────
+  // sourceDuration: float seconds, probed from the source file via
+  // ffprobe at session creation. When present, this is used as the FIXED
+  // total for time display + scrubber + progress tracking so the
+  // denominator doesn't appear to "grow" as the HLS transcoder writes
+  // segments on demand. Null if ffprobe failed → fallback to the old
+  // growing-duration behavior (video.duration + sessionStartOffset).
+  sourceDuration = null,
   // ── Subtitles ────────────────────────────────────────────────
   // subtitleTracks: [{ language, language_name, file_id }]
   // selectedSubtitle: language code ('en', 'es', etc.) or null for off
@@ -184,6 +192,9 @@ export default function HlsVideo({
   // ── Continue Watching hooks (progress tracking + resume) ─────
   // metadata.sessionStartOffset is read by useProgressTracking when
   // saving — saved values are in REAL coordinates (currentTime + offset).
+  // metadata.sourceDuration is the FIXED total duration passed to
+  // useProgressTracking so the saved "duration" field doesn't crawl up
+  // over the first 1-2 minutes of playback.
   const metadata = useMemo(() => ({
     mediaType,
     tmdbId,
@@ -194,7 +205,8 @@ export default function HlsVideo({
     posterPath,
     backdropPath,
     sessionStartOffset,
-  }), [mediaType, tmdbId, season, episode, title, posterPath, backdropPath, sessionStartOffset]);
+    sourceDuration,
+  }), [mediaType, tmdbId, season, episode, title, posterPath, backdropPath, sessionStartOffset, sourceDuration]);
 
   // Only track progress when we have essential metadata
   const trackingEnabled = !!(mediaType && tmdbId);
@@ -357,10 +369,12 @@ export default function HlsVideo({
   // Scrub bar — pointer events with drag support
   //
   // All scrubber math operates in REAL-WORLD coordinates: the bar
-  // represents [0, duration + sessionStartOffset]. The `<video>`'s
-  // currentTime is session-relative (0 = first segment, which sits at
-  // real-world second `sessionStartOffset`), so we add the offset when
-  // displaying and subtract it before setting currentTime.
+  // represents [0, effectiveTotalDuration] where effectiveTotalDuration
+  // is sourceDuration (if available) or (video.duration + sessionStartOffset)
+  // as a fallback. The `<video>`'s currentTime is session-relative
+  // (0 = first segment, which sits at real-world second `sessionStartOffset`),
+  // so we add the offset when displaying and subtract it before setting
+  // currentTime.
   //
   // Cross-offset-boundary seek (user drags BEFORE `sessionStartOffset`)
   // is not yet supported — we'd need to mint a fresh session at the
@@ -373,10 +387,13 @@ export default function HlsVideo({
     if (!el || !v) return 0;
     const rect = el.getBoundingClientRect();
     const pct = Math.max(0, Math.min(1, (clientX - rect.left) / rect.width));
-    const sessionDur = isFinite(v.duration) && v.duration > 0 ? v.duration : 0;
-    const totalDur = sessionDur + (sessionStartOffset || 0);
+    // Use sourceDuration as denominator when available; else fall back
+    // to the session duration + offset (old growing behavior).
+    const totalDur = sourceDuration && sourceDuration > 0
+      ? sourceDuration
+      : (isFinite(v.duration) && v.duration > 0 ? v.duration : 0) + (sessionStartOffset || 0);
     return pct * totalDur;        // REAL-world target time in seconds
-  }, [sessionStartOffset]);
+  }, [sessionStartOffset, sourceDuration]);
 
   const onProgressMove = useCallback((e) => {
     const t = computeBarSeek(e.clientX);
@@ -855,17 +872,25 @@ export default function HlsVideo({
   // ─────────────────────────────────────────────────────────
   const playedPct = useMemo(() => {
     const off = sessionStartOffset || 0;
-    const totalDur = duration + off;
+    const realTime = currentTime + off;
+    // Use sourceDuration as denominator when available; fallback to
+    // video.duration + offset (old growing behavior). Gracefully handle
+    // null/0/undefined sourceDuration with no NaN or Infinity in display.
+    const totalDur = sourceDuration && sourceDuration > 0
+      ? sourceDuration
+      : (duration > 0 ? duration : 0) + off;
     if (totalDur <= 0) return 0;
-    return Math.min(100, ((currentTime + off) / totalDur) * 100);
-  }, [currentTime, duration, sessionStartOffset]);
+    return Math.min(100, (realTime / totalDur) * 100);
+  }, [currentTime, duration, sessionStartOffset, sourceDuration]);
 
   const bufferedPct = useMemo(() => {
     const off = sessionStartOffset || 0;
-    const totalDur = duration + off;
+    const totalDur = sourceDuration && sourceDuration > 0
+      ? sourceDuration
+      : (duration > 0 ? duration : 0) + off;
     if (totalDur <= 0) return 0;
     return Math.min(100, ((bufferedEnd + off) / totalDur) * 100);
-  }, [bufferedEnd, duration, sessionStartOffset]);
+  }, [bufferedEnd, duration, sessionStartOffset, sourceDuration]);
 
   const VolIcon = muted || volume === 0 ? VolumeX : (volume < 0.5 ? Volume1 : Volume2);
 
@@ -1093,7 +1118,11 @@ export default function HlsVideo({
 
             {/* Time */}
             <div className="text-base sm:text-sm font-mono tabular-nums opacity-90 whitespace-nowrap">
-              {formatTime(currentTime + (sessionStartOffset || 0))} <span className="opacity-60">/ {formatTime(duration + (sessionStartOffset || 0))}</span>
+              {formatTime(currentTime + (sessionStartOffset || 0))} <span className="opacity-60">/ {formatTime(
+                sourceDuration && sourceDuration > 0
+                  ? sourceDuration
+                  : (duration > 0 ? duration : 0) + (sessionStartOffset || 0)
+              )}</span>
             </div>
 
             <div className="flex-1" />

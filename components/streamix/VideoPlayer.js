@@ -100,12 +100,18 @@ const VideoPlayer = ({
 
   // Premium (Real-Debrid) resolution state
   // Shape: { state: 'idle'|'loading'|'ok'|'error', url, quality, title, error,
-  //          alternates, altIndex, qualities }
+  //          alternates, altIndex, qualities, sessionStartOffset, sourceDuration }
   // - `qualities` is the per-resolution picker list from the resolver
   //   (≤4 entries, sorted hi→lo). Passed straight to HlsVideo as
   //   `qualityOptions`. Empty array when the resolver couldn't probe any
   //   candidates, or for the AllDebrid client-side path (which doesn't
   //   return a quality menu).
+  // - `sourceDuration` (float seconds) is the FULL video duration from
+  //   ffprobe (probed once at session creation). The frontend uses it as
+  //   a FIXED denominator for the time display + scrubber so the total
+  //   runtime doesn't appear to "grow" as the HLS transcoder writes
+  //   segments on demand. Null if ffprobe failed → fallback to the old
+  //   growing-duration behavior.
   const [premium, setPremium] = useState({
     state: 'idle', url: null, quality: null, title: null, error: null,
     alternates: [], altIndex: 0, qualities: [],
@@ -116,6 +122,7 @@ const VideoPlayer = ({
     // user switches quality mid-playback we POST /api/stream/hls/session
     // with start=<currentRealTime> and update this value to the new offset.
     sessionStartOffset: 0,
+    sourceDuration: null,
   });
   const premiumCacheRef = useRef(new Map());
   // initialResume should only fire the resume path on the FIRST resolver
@@ -212,7 +219,7 @@ const VideoPlayer = ({
   // ────────────────────────────────────────────────────────────
   useEffect(() => {
     if (!activeServer.isPremium) {
-      setPremium((p) => (p.state === 'idle' ? p : { state: 'idle', url: null, quality: null, title: null, error: null, alternates: [], altIndex: 0, qualities: [], sessionStartOffset: 0 }));
+      setPremium((p) => (p.state === 'idle' ? p : { state: 'idle', url: null, quality: null, title: null, error: null, alternates: [], altIndex: 0, qualities: [], sessionStartOffset: 0, sourceDuration: null }));
       return;
     }
     if (!playerActive || showTrailer) return;
@@ -229,7 +236,7 @@ const VideoPlayer = ({
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), PREMIUM_TIMEOUT_MS);
 
-    setPremium({ state: 'loading', url: null, quality: null, title: null, error: null, alternates: [], altIndex: 0, qualities: [], sessionStartOffset: 0 });
+    setPremium({ state: 'loading', url: null, quality: null, title: null, error: null, alternates: [], altIndex: 0, qualities: [], sessionStartOffset: 0, sourceDuration: null });
     updateStatus(serverIdx, STATUS.LOADING);
     setToast(null);
 
@@ -266,6 +273,7 @@ const VideoPlayer = ({
             alternates: [],
             qualities: [],
             sessionStartOffset: 0,
+            sourceDuration: null,
           };
           premiumCacheRef.current.set(cacheKey, payload);
           setPremium({ state: 'ok', ...payload, error: null, altIndex: 0 });
@@ -274,7 +282,7 @@ const VideoPlayer = ({
         .catch(err => {
           if (cancelled) return;
           console.error(`[Premium AD] Error:`, err);
-          setPremium({ state: 'error', url: null, quality: null, title: null, error: err.message, alternates: [], altIndex: 0, qualities: [], sessionStartOffset: 0 });
+          setPremium({ state: 'error', url: null, quality: null, title: null, error: err.message, alternates: [], altIndex: 0, qualities: [], sessionStartOffset: 0, sourceDuration: null });
           updateStatus(serverIdx, STATUS.FAILED);
           triedAutoSwitchRef.current.add(serverIdx);
           setToast({ kind: 'error', msg: `AllDebrid: ${err.message}` });
@@ -318,6 +326,7 @@ const VideoPlayer = ({
           alternates: Array.isArray(data.alternates) ? data.alternates : [],
           qualities: Array.isArray(data.qualities) ? data.qualities : [],
           sessionStartOffset: Number(data.startOffset) || 0,
+          sourceDuration: typeof data.sourceDuration === 'number' ? data.sourceDuration : null,
         };
         premiumCacheRef.current.set(cacheKey, payload);
         setPremium({ state: 'ok', ...payload, error: null, altIndex: 0 });
@@ -328,7 +337,7 @@ const VideoPlayer = ({
         const msg = e.name === 'AbortError'
           ? 'Premium resolution timed out.'
           : (e.message || 'Premium resolution failed.');
-        setPremium({ state: 'error', url: null, quality: null, title: null, error: msg, alternates: [], altIndex: 0, qualities: [], sessionStartOffset: 0 });
+        setPremium({ state: 'error', url: null, quality: null, title: null, error: msg, alternates: [], altIndex: 0, qualities: [], sessionStartOffset: 0, sourceDuration: null });
         updateStatus(serverIdx, STATUS.FAILED);
         triedAutoSwitchRef.current.add(serverIdx);
         setToast({
@@ -482,7 +491,7 @@ const VideoPlayer = ({
     if (activeServer.isPremium) {
       const cacheKey = `${mediaType}:${tmdbId}:${season}:${episode}`;
       premiumCacheRef.current.delete(cacheKey);
-      setPremium({ state: 'idle', url: null, quality: null, title: null, error: null, qualities: [] });
+      setPremium({ state: 'idle', url: null, quality: null, title: null, error: null, qualities: [], sessionStartOffset: 0, sourceDuration: null });
     }
     setIframeKey((k) => k + 1);
   };
@@ -589,6 +598,7 @@ const VideoPlayer = ({
                 qualityLabel={premium.quality || 'Source · 1080p'}
                 qualityOptions={premium.qualities || []}
                 sessionStartOffset={premium.sessionStartOffset || 0}
+                sourceDuration={premium.sourceDuration || null}
                 onQualityChange={async (label, target, realTime) => {
                   // Three paths converge here:
                   //   1. Safety-timer revert from HlsVideo. target is the
@@ -634,6 +644,7 @@ const VideoPlayer = ({
                       ...p,
                       url: data.streamUrl,
                       sessionStartOffset: Number(data.startOffset) || realTime,
+                      sourceDuration: typeof data.sourceDuration === 'number' ? data.sourceDuration : p.sourceDuration,
                     }));
                   } catch (e) {
                     // Per spec: if fresh-session creation fails, fall back

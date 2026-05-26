@@ -130,10 +130,13 @@ function rankStream(filename, sizeBytes, name = '') {
   return score;
 }
 
-/** Create an HLS session and return its playlist URL for the browser. */
+/** Create an HLS session and return its playlist URL + metadata for the browser. */
 function buildHlsUrl(sourceUrl, meta = {}, startOffset = 0) {
   const session = createSession(sourceUrl, meta, startOffset);
-  return `/api/stream/hls/${session.id}/index.m3u8`;
+  return {
+    streamUrl: `/api/stream/hls/${session.id}/index.m3u8`,
+    sourceDuration: session.sourceDuration || null,
+  };
 }
 
 export async function GET(request) {
@@ -340,7 +343,7 @@ export async function GET(request) {
 
     // Build an HLS playlist URL so the browser plays via hls.js — works for
     // every codec the source might have (we transcode if needed).
-    const hlsUrl = buildHlsUrl(chosen.url, {
+    const hlsResult = buildHlsUrl(chosen.url, {
       filename: chosen.filename,
       sizeBytes: chosen.sizeBytes,
       quality: chosen.name,
@@ -368,8 +371,8 @@ export async function GET(request) {
       .map((label) => {
         const entry = qualityByRes[label];
         if (!entry) return null;
-        const streamUrl = entry.url === chosen.url
-          ? hlsUrl
+        const result = entry.url === chosen.url
+          ? hlsResult
           : buildHlsUrl(entry.url, {
               filename: entry.filename,
               sizeBytes: entry.sizeBytes,
@@ -377,7 +380,7 @@ export async function GET(request) {
             }, startOffset);
         return {
           label,
-          streamUrl,
+          streamUrl: result.streamUrl,
           streamType: 'hls',
           sizeBytes: entry.sizeBytes,
           filename: entry.filename || entry.name,
@@ -387,6 +390,7 @@ export async function GET(request) {
           // This is what makes "switch to 720p without losing my place"
           // actually preserve position across the new ffmpeg session.
           directUrl: entry.url,
+          sourceDuration: result.sourceDuration,
         };
       })
       .filter(Boolean)
@@ -394,7 +398,7 @@ export async function GET(request) {
 
     return NextResponse.json({
       success: true,
-      streamUrl: hlsUrl,
+      streamUrl: hlsResult.streamUrl,
       streamType: 'hls',
       directUrl: chosen.url,                 // for debugging + quality-swap re-seeding
       quality: chosen.name.slice(0, 100),
@@ -406,6 +410,13 @@ export async function GET(request) {
       // real-world coordinates (currentTime + startOffset) and to compute
       // the new `start` value when creating a fresh session on quality swap.
       startOffset,
+      // Source duration (float seconds) from ffprobe. The frontend uses
+      // this as a FIXED denominator for the time display + scrubber so
+      // the total runtime doesn't appear to "grow" over the first 1-2
+      // minutes while the HLS transcoder writes segments on demand. Null
+      // if ffprobe failed; the frontend falls back to the old growing-
+      // duration behavior (video.duration + startOffset).
+      sourceDuration: hlsResult.sourceDuration,
       // Per-resolution quality picker. ≤ 4 entries, sorted hi→lo. The
       // player's settings menu lists these alongside an "Auto" option;
       // when the user picks one, the player swaps src to the matching
@@ -414,16 +425,20 @@ export async function GET(request) {
       // Pre-ranked alternates the client can rotate to if the top HLS
       // session fails for any reason (e.g., ffmpeg refused to demux this
       // particular source). Each alternate gets its own HLS session.
-      alternates: alternates.slice(0, 5).map((s) => ({
-        streamUrl: buildHlsUrl(s.url, {
+      alternates: alternates.slice(0, 5).map((s) => {
+        const result = buildHlsUrl(s.url, {
           filename: s.filename, sizeBytes: s.sizeBytes, quality: s.name,
-        }, startOffset),
-        streamType: 'hls',
-        directUrl: s.url,
-        filename: s.filename || s.name,
-        quality: s.name,
-        sizeBytes: s.sizeBytes,
-      })),
+        }, startOffset);
+        return {
+          streamUrl: result.streamUrl,
+          streamType: 'hls',
+          directUrl: s.url,
+          filename: s.filename || s.name,
+          quality: s.name,
+          sizeBytes: s.sizeBytes,
+          sourceDuration: result.sourceDuration,
+        };
+      }),
     });
   } catch (error) {
     console.error('[RD] Error:', error.message);

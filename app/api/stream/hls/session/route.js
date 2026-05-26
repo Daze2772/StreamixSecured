@@ -62,12 +62,26 @@ export async function POST(request) {
       startOffset,
     );
 
+    // ── Probe source duration immediately (quality-switch path) ───
+    // createSession spawns the session object but doesn't call
+    // ensureFfmpeg yet (that happens lazily on first playlist GET). For
+    // quality switches we need sourceDuration in the POST response so the
+    // frontend can atomically swap both URL and denominator. We probe
+    // synchronously here — adds ~200-500 ms latency on the switch but
+    // gives us the duration before the browser even starts loading.
+    try {
+      await import('@/lib/hls-sessions').then((mod) => mod.ensureFfmpeg(session));
+    } catch (e) {
+      console.warn(`[HLS session] ensureFfmpeg failed for ${session.id}:`, e?.message);
+    }
+
     return NextResponse.json({
       success: true,
       sessionId: session.id,
       streamUrl: `/api/stream/hls/${session.id}/index.m3u8`,
       streamType: 'hls',
       startOffset,
+      sourceDuration: session.sourceDuration || null,
     });
   } catch (error) {
     console.error('[HLS session] Error:', error?.message);
