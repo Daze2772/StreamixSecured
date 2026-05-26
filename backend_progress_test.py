@@ -9,7 +9,7 @@ import time
 import json
 
 # Base URL from environment
-BASE_URL = "https://stream-mobile-test.preview.emergentagent.com/api"
+BASE_URL = "https://stream-seek-fix.preview.emergentagent.com/api"
 
 # Test data
 CLIENT_ID = "test-client-progress-123"
