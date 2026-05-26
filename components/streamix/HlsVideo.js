@@ -193,11 +193,32 @@ export default function HlsVideo({
 
   const toggleFullscreen = useCallback(() => {
     const w = wrapRef.current;
-    if (!w) return;
-    if (document.fullscreenElement) {
-      document.exitFullscreen?.().catch(() => {});
+    const v = videoRef.current;
+    if (!w || !v) return;
+    
+    // Exit fullscreen (standard + webkit)
+    if (document.fullscreenElement || document.webkitFullscreenElement) {
+      if (document.exitFullscreen) {
+        document.exitFullscreen().catch(() => {});
+      } else if (document.webkitExitFullscreen) {
+        document.webkitExitFullscreen();
+      }
+      return;
+    }
+    
+    // Enter fullscreen with cascading fallback for iOS Safari
+    if (w.requestFullscreen) {
+      // Standard Fullscreen API — desktop, iPad, Android Chrome
+      w.requestFullscreen().catch(() => {});
+    } else if (w.webkitRequestFullscreen) {
+      // Older Safari (macOS, iPad) — webkit on container
+      w.webkitRequestFullscreen();
+    } else if (v.webkitEnterFullscreen) {
+      // iPhone Safari only — works on <video> element only
+      // Note: iOS will show native video player UI in fullscreen
+      v.webkitEnterFullscreen();
     } else {
-      (w.requestFullscreen?.() || Promise.resolve()).catch(() => {});
+      console.warn('[Player] No fullscreen support detected');
     }
   }, []);
 
@@ -448,9 +469,13 @@ export default function HlsVideo({
 
   // Fullscreen state sync (changes can come from F11, ESC, native button…)
   useEffect(() => {
-    const onChange = () => setIsFullscreen(!!document.fullscreenElement);
+    const onChange = () => setIsFullscreen(!!(document.fullscreenElement || document.webkitFullscreenElement));
     document.addEventListener('fullscreenchange', onChange);
-    return () => document.removeEventListener('fullscreenchange', onChange);
+    document.addEventListener('webkitfullscreenchange', onChange);
+    return () => {
+      document.removeEventListener('fullscreenchange', onChange);
+      document.removeEventListener('webkitfullscreenchange', onChange);
+    };
   }, []);
 
   // ─────────────────────────────────────────────────────────
@@ -942,8 +967,8 @@ export default function HlsVideo({
               
               {/* CC Popover */}
               {subtitlesOpen && (
-                <div className="absolute bottom-12 right-0 w-56 max-sm:max-w-[calc(100vw-2rem)] rounded-lg bg-black/95 backdrop-blur-md text-white shadow-2xl border border-white/10 overflow-hidden">
-                  <div className="py-1">
+                <div className="absolute bottom-12 right-0 w-56 max-sm:max-w-[calc(100vw-2rem)] max-sm:max-h-[60vh] rounded-lg bg-black/95 backdrop-blur-md text-white shadow-2xl border border-white/10 overflow-hidden">
+                  <div className="py-2 max-sm:overflow-y-auto max-sm:max-h-[60vh] overscroll-contain">
                     {/* Loading state */}
                     {subtitlesLoading && (
                       <div className="px-3 py-4 text-center text-sm opacity-60 flex items-center justify-center gap-2">
