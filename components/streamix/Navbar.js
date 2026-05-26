@@ -58,7 +58,7 @@ const Navbar = ({ onResultClick }) => {
           <div className="h-9 w-9 rounded-md bg-red-600 grid place-items-center shadow-lg shadow-red-600/30">
             <Film className="w-5 h-5" />
           </div>
-          <span className="text-xl md:text-2xl font-black tracking-tight">
+          <span className={`text-xl md:text-2xl font-black tracking-tight ${open ? 'hidden sm:inline' : 'inline'}`}>
             STREAM<span className="text-red-600">IX</span>
           </span>
         </Link>
