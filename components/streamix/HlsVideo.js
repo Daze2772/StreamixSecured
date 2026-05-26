@@ -51,16 +51,6 @@ const RES_ORDER = ['2160p', '1080p', '720p', '480p', '360p'];
 // hang), we surface a toast and revert the player to the previous src.
 const SWITCH_TIMEOUT_MS = 10_000;
 
-// Format byte counts for the quality menu ("1.85 GB", "812 MB"). Falsy / 0
-// returns '' so the row just shows the label.
-const formatSize = (bytes) => {
-  if (!bytes || bytes <= 0) return '';
-  const gb = bytes / (1024 ** 3);
-  if (gb >= 1) return `${gb.toFixed(2)} GB`;
-  const mb = bytes / (1024 ** 2);
-  return `${Math.round(mb)} MB`;
-};
-
 // Pick the best quality label for "Auto" mode using navigator.connection.downlink
 // (Mbps). Falls back to '1080p' when the API is unavailable (Safari/Firefox).
 // Returns the label of the highest available quality at-or-below the
@@ -949,9 +939,6 @@ export default function HlsVideo({
                                 {activeQualityLabel === q.label && <Check size={14} />}
                               </span>
                               <span className="flex-1 text-left">{q.label}</span>
-                              <span className="opacity-60 text-[11px] tabular-nums">
-                                {formatSize(q.sizeBytes)}
-                              </span>
                             </button>
                           ))}
                         </>
