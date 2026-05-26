@@ -2,6 +2,56 @@
 
 import { getToken } from '../login/route.js';
 
+// ISO 639-1 language code to English name mapping
+const LANG_NAMES = {
+  en: 'English',
+  es: 'Spanish',
+  fr: 'French',
+  de: 'German',
+  it: 'Italian',
+  pt: 'Portuguese',
+  'pt-br': 'Portuguese (Brazil)',
+  'pt-BR': 'Portuguese (Brazil)',
+  ar: 'Arabic',
+  ru: 'Russian',
+  zh: 'Chinese',
+  ja: 'Japanese',
+  ko: 'Korean',
+  tr: 'Turkish',
+  pl: 'Polish',
+  nl: 'Dutch',
+  sv: 'Swedish',
+  da: 'Danish',
+  no: 'Norwegian',
+  fi: 'Finnish',
+  cs: 'Czech',
+  el: 'Greek',
+  he: 'Hebrew',
+  hi: 'Hindi',
+  id: 'Indonesian',
+  th: 'Thai',
+  vi: 'Vietnamese',
+  uk: 'Ukrainian',
+  hu: 'Hungarian',
+  ro: 'Romanian',
+  bg: 'Bulgarian',
+  hr: 'Croatian',
+  sr: 'Serbian',
+  sk: 'Slovak',
+  sl: 'Slovenian',
+  et: 'Estonian',
+  lv: 'Latvian',
+  lt: 'Lithuanian',
+  fa: 'Persian',
+  ur: 'Urdu',
+  bn: 'Bengali',
+  ms: 'Malay',
+  ta: 'Tamil',
+  te: 'Telugu',
+  ml: 'Malayalam',
+  kn: 'Kannada',
+};
+
 export async function GET(request) {
   const { searchParams } = new URL(request.url);
   const tmdbId = searchParams.get('tmdb_id');
@@ -93,7 +143,7 @@ export async function GET(request) {
         languageMap.set(lang, {
           file_id: sub.attributes.files[0]?.file_id,
           language: lang,
-          language_name: sub.attributes.feature_details?.movie_name || lang,
+          language_name: LANG_NAMES[lang] || lang.toUpperCase(),
           downloads: downloads,
           release: sub.attributes.release || 'Unknown'
         });
