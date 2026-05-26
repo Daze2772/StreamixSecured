@@ -51,7 +51,7 @@ const DetailModal = ({ open, onOpenChange, item, onCardClick }) => {
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
       <DialogContent className="max-w-4xl p-0 bg-neutral-950 border-neutral-800 text-white overflow-hidden max-h-[92vh] overflow-y-auto">
-        <div className="relative">
+        <div className="relative min-w-0">
           {/* Compact backdrop area (trailer is lazy-loaded on click — saves browser RAM) */}
           <div className="relative w-full bg-black overflow-hidden" style={{ height: 'min(45vh, 420px)' }}>
             {playTrailer && trailer ? (
@@ -101,10 +101,10 @@ const DetailModal = ({ open, onOpenChange, item, onCardClick }) => {
 
           {/* Title + Actions */}
           <div className="px-5 md:px-8 pt-4 pb-2">
-            <div className="flex flex-wrap items-center gap-2 md:gap-3">
+            <div className="flex flex-wrap items-center gap-2 sm:gap-3">
               <Button
                 onClick={goToWatch}
-                className="bg-red-600 hover:bg-red-700 text-white font-bold h-11 px-6 shadow-lg shadow-red-600/30"
+                className="basis-full sm:basis-auto bg-red-600 hover:bg-red-700 text-white font-bold h-11 px-6 shadow-lg shadow-red-600/30"
               >
                 <Play className="w-5 h-5 mr-2 fill-white" /> Play Now
               </Button>
@@ -112,12 +112,12 @@ const DetailModal = ({ open, onOpenChange, item, onCardClick }) => {
                 <Button
                   variant="secondary"
                   onClick={() => setPlayTrailer(true)}
-                  className="bg-white/15 hover:bg-white/25 border border-white/10 h-11"
+                  className="flex-1 sm:flex-none bg-white/15 hover:bg-white/25 border border-white/10 h-11"
                 >
                   <Youtube className="w-4 h-4 mr-2" /> Watch Trailer
                 </Button>
               )}
-              <Button variant="secondary" className="bg-white/15 hover:bg-white/25 border border-white/10 h-11">
+              <Button variant="secondary" className="flex-1 sm:flex-none bg-white/15 hover:bg-white/25 border border-white/10 h-11">
                 <Plus className="w-4 h-4 mr-2" /> My List
               </Button>
             </div>

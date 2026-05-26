@@ -708,8 +708,19 @@ export default function HlsVideo({
 
   const VolIcon = muted || volume === 0 ? VolumeX : (volume < 0.5 ? Volume1 : Volume2);
 
+  // True when ANY player menu (CC popover, Settings tree) is open. Used to:
+  //  - keep controls visible (effectiveVisible)
+  //  - hold off the mouse-leave auto-hide
+  //  - render the tap-capture backdrop that closes the menu without
+  //    also toggling play/pause on the same tap
+  const anyMenuOpen = settingsOpen || subtitlesOpen;
+  const closeAllMenus = useCallback(() => {
+    setSettingsOpen(false);
+    setSubtitlesOpen(false);
+  }, []);
+
   // Keep controls visible while a menu is open
-  const effectiveVisible = controlsVisible || !isPlaying || settingsOpen;
+  const effectiveVisible = controlsVisible || !isPlaying || anyMenuOpen;
 
   return (
     <div
@@ -717,7 +728,7 @@ export default function HlsVideo({
       tabIndex={0}
       onKeyDown={handleKey}
       onMouseMove={showControls}
-      onMouseLeave={() => { if (isPlaying && !settingsOpen) setControlsVisible(false); }}
+      onMouseLeave={() => { if (isPlaying && !anyMenuOpen) setControlsVisible(false); }}
       className={`relative outline-none select-none group ${className}`}
       style={{ touchAction: 'none' }}
     >
@@ -806,6 +817,20 @@ export default function HlsVideo({
         </button>
       )}
 
+      {/* ─── Tap-capture backdrop while a menu is open ───
+          Sits above the <video> (which has the click→play handler) but
+          below the controls overlay + popovers. Catches taps anywhere on
+          the player surface, closes the menu, and stops propagation so
+          play/pause doesn't fire on the same gesture. */}
+      {anyMenuOpen && (
+        <div
+          aria-hidden
+          onClick={(e) => { e.stopPropagation(); closeAllMenus(); }}
+          onPointerDown={(e) => e.stopPropagation()}
+          className="absolute inset-0 z-[15]"
+        />
+      )}
+
       {/* ─── Controls overlay ─── */}
       <div
         className={`absolute inset-x-0 bottom-0 z-20 transition-opacity duration-300 ${
@@ -851,11 +876,11 @@ export default function HlsVideo({
           </div>
 
           {/* Buttons row */}
-          <div className="flex items-center gap-3 mt-2 text-white">
+          <div className="flex items-center gap-1 sm:gap-3 mt-2 text-white">
             <button
               aria-label={isPlaying ? 'Pause' : 'Play'}
               onClick={togglePlay}
-              className="p-1.5 rounded hover:bg-white/15 transition-colors"
+              className="h-11 w-11 sm:h-9 sm:w-9 grid place-items-center rounded hover:bg-white/15 transition-colors"
             >
               {isPlaying
                 ? <Pause size={22} className="fill-white" />
@@ -867,7 +892,7 @@ export default function HlsVideo({
               <button
                 aria-label={muted ? 'Unmute' : 'Mute'}
                 onClick={toggleMute}
-                className="p-1.5 rounded hover:bg-white/15 transition-colors"
+                className="h-11 w-11 sm:h-9 sm:w-9 grid place-items-center rounded hover:bg-white/15 transition-colors"
               >
                 <VolIcon size={22} />
               </button>
@@ -884,7 +909,7 @@ export default function HlsVideo({
             </div>
 
             {/* Time */}
-            <div className="text-sm font-mono tabular-nums opacity-90">
+            <div className="text-base sm:text-sm font-mono tabular-nums opacity-90 whitespace-nowrap">
               {formatTime(currentTime)} <span className="opacity-60">/ {formatTime(duration)}</span>
             </div>
 
@@ -892,8 +917,8 @@ export default function HlsVideo({
 
             {/* Speed shortcut button (shows current speed) */}
             <button
-              onClick={() => { setSettingsOpen(true); setSettingsView('speed'); }}
-              className="px-2 py-1 rounded text-xs font-medium hover:bg-white/15 transition-colors tabular-nums"
+              onClick={() => { setSettingsOpen(true); setSubtitlesOpen(false); setSettingsView('speed'); }}
+              className="h-11 sm:h-9 px-3 sm:px-2 rounded text-sm sm:text-xs font-medium hover:bg-white/15 transition-colors tabular-nums"
               aria-label="Playback speed"
             >
               {playbackRate}×
@@ -903,8 +928,8 @@ export default function HlsVideo({
             <div className="relative">
               <button
                 aria-label="Subtitles"
-                onClick={() => setSubtitlesOpen((o) => !o)}
-                className={`p-1.5 rounded hover:bg-white/15 transition-colors ${
+                onClick={() => { setSubtitlesOpen((o) => !o); setSettingsOpen(false); }}
+                className={`h-11 w-11 sm:h-9 sm:w-9 grid place-items-center rounded hover:bg-white/15 transition-colors ${
                   selectedSubtitle ? 'bg-amber-500/20 text-amber-300' : 'opacity-60 hover:opacity-100'
                 } ${subtitlesLoading ? 'opacity-50' : ''}`}
                 disabled={subtitlesLoading}
@@ -988,8 +1013,8 @@ export default function HlsVideo({
             <div className="relative">
               <button
                 aria-label="Settings"
-                onClick={() => { setSettingsOpen((o) => !o); setSettingsView('main'); }}
-                className={`p-1.5 rounded hover:bg-white/15 transition-colors ${settingsOpen ? 'bg-white/15' : ''}`}
+                onClick={() => { setSettingsOpen((o) => !o); setSubtitlesOpen(false); setSettingsView('main'); }}
+                className={`h-11 w-11 sm:h-9 sm:w-9 grid place-items-center rounded hover:bg-white/15 transition-colors ${settingsOpen ? 'bg-white/15' : ''}`}
               >
                 <Settings size={22} className={settingsOpen ? 'rotate-45 transition-transform' : 'transition-transform'} />
               </button>
@@ -1096,11 +1121,11 @@ export default function HlsVideo({
               )}
             </div>
 
-            {/* PiP */}
+            {/* PiP — hidden on phones (no multi-window value, saves space) */}
             <button
               aria-label="Picture-in-picture"
               onClick={togglePiP}
-              className={`p-1.5 rounded hover:bg-white/15 transition-colors ${isPiP ? 'bg-white/15' : ''}`}
+              className={`hidden sm:grid sm:h-9 sm:w-9 place-items-center rounded hover:bg-white/15 transition-colors ${isPiP ? 'bg-white/15' : ''}`}
             >
               <PictureInPicture2 size={22} />
             </button>
@@ -1109,7 +1134,7 @@ export default function HlsVideo({
             <button
               aria-label={isFullscreen ? 'Exit fullscreen' : 'Enter fullscreen'}
               onClick={toggleFullscreen}
-              className="p-1.5 rounded hover:bg-white/15 transition-colors"
+              className="h-11 w-11 sm:h-9 sm:w-9 grid place-items-center rounded hover:bg-white/15 transition-colors"
             >
               {isFullscreen ? <Minimize size={22} /> : <Maximize size={22} />}
             </button>
