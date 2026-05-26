@@ -219,6 +219,75 @@ backend:
       - working: true
         agent: "testing"
         comment: "Validated previously — 206 ranges + Content-Type rewrite + 400/403 errors."
+  - task: "Continue Watching - POST /api/progress (upsert watch progress)"
+    implemented: true
+    working: true
+    file: "/app/app/api/progress/route.js"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+      - working: true
+        agent: "testing"
+        comment: |
+          ✅ TESTED & VERIFIED - POST /api/progress fully functional (3/3 tests):
+          • Movie progress (incomplete): Creates entry with completed=false when position < 90% of duration
+          • Movie progress (completed): Updates entry with completed=true when position >= 90% of duration
+          • TV episode progress + upsert: Creates new entries and updates existing ones without duplicates
+          • Unique index on (clientId, mediaType, tmdbId, season, episode) working correctly
+          • All required fields validated, proper error handling for missing fields (400)
+  - task: "Continue Watching - GET /api/progress (list in-progress titles)"
+    implemented: true
+    working: true
+    file: "/app/app/api/progress/route.js"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+      - working: true
+        agent: "testing"
+        comment: |
+          ✅ TESTED & VERIFIED - GET /api/progress fully functional (2/2 tests):
+          • TV show grouping: Returns ONE entry per show (most recent episode) using MongoDB aggregation
+          • Filters working correctly: position > 30, completed=false
+          • Aggregation pipeline correctly groups by (mediaType, tmdbId) and picks latest by updatedAt
+          • Low-position entries (position <= 30) correctly filtered out
+          • Completed entries (completed=true) correctly filtered out
+          • Limit parameter working correctly
+  - task: "Continue Watching - GET /api/progress/single (get specific entry)"
+    implemented: true
+    working: true
+    file: "/app/app/api/progress/single/route.js"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+      - working: true
+        agent: "testing"
+        comment: |
+          ✅ TESTED & VERIFIED - GET /api/progress/single fully functional (1/1 test):
+          • Returns correct progress entry for exact match (clientId, mediaType, tmdbId, season, episode)
+          • Returns null for non-existent entries (no errors)
+          • Integer parsing for tmdbId, season, episode working correctly
+          • Proper error handling for missing required fields (400)
+  - task: "Continue Watching - DELETE /api/progress (remove from Continue Watching)"
+    implemented: true
+    working: true
+    file: "/app/app/api/progress/route.js"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+      - working: true
+        agent: "testing"
+        comment: |
+          ✅ TESTED & VERIFIED - DELETE /api/progress fully functional (3/3 tests):
+          • Delete specific TV episode: Deletes only the specified episode (with season/episode)
+          • Delete entire TV show: Deletes ALL episodes when no season/episode specified
+          • Delete movie: Deletes movie entry correctly
+          • Returns correct deletedCount in response
+          • Proper error handling for missing required fields (400)
+          • Filter logic working correctly for both specific and bulk deletes
 
 frontend:
   - task: "HlsVideo component (hls.js wrapper)"
@@ -254,14 +323,16 @@ frontend:
 
 metadata:
   created_by: "main_agent"
-  version: "1.2"
-  test_sequence: 4
+  version: "1.3"
+  test_sequence: 5
   run_ui: false
 
 test_plan:
   current_focus:
-    - "Real-Debrid Premium resolver — Comet addon + smart ranking + placeholder probe"
-    - "Video stream proxy (rewrites Content-Type, strips Content-Disposition: attachment)"
+    - "Continue Watching - POST /api/progress (upsert watch progress)"
+    - "Continue Watching - GET /api/progress (list in-progress titles)"
+    - "Continue Watching - GET /api/progress/single (get specific entry)"
+    - "Continue Watching - DELETE /api/progress (remove from Continue Watching)"
   stuck_tasks: []
   test_all: false
   test_priority: "high_first"
@@ -392,3 +463,50 @@ agent_communication:
 
 ✅ **Subtitles feature shipped** — OpenSubtitles integration complete with CC popover, localStorage persistence, and proper language name display.
 📱 **Next priority:** Mobile UI optimization for responsive player controls and touch-friendly subtitle picker.
+
+  - agent: "testing"
+    message: |
+      ✅ CONTINUE WATCHING PROGRESS TRACKING - ALL TESTS PASSED (10/10)
+      
+      Executed comprehensive testing of Continue Watching progress tracking API routes:
+      
+      POST /api/progress - Upsert watch progress (3/3 tests passed):
+      • Movie progress (incomplete): ✅ Creates entry with completed=false when position < 90%
+      • Movie progress (completed): ✅ Updates entry with completed=true when position >= 90%
+      • TV episode progress + upsert: ✅ Creates new entries and updates existing ones without duplicates
+      • Unique index on (clientId, mediaType, tmdbId, season, episode) working correctly
+      
+      GET /api/progress - List in-progress titles (2/2 tests passed):
+      • TV show grouping: ✅ Returns ONE entry per show (most recent episode) using MongoDB aggregation
+      • Filters: ✅ position > 30 and completed=false working correctly
+      • Aggregation pipeline correctly groups by (mediaType, tmdbId) and picks latest by updatedAt
+      • Low-position entries (position <= 30) correctly filtered out
+      • Completed entries (completed=true) correctly filtered out
+      
+      GET /api/progress/single - Get specific entry (1/1 test passed):
+      • ✅ Returns correct progress entry for exact match parameters
+      • ✅ Returns null for non-existent entries (no errors)
+      • Integer parsing for tmdbId, season, episode working correctly
+      
+      DELETE /api/progress - Remove from Continue Watching (3/3 tests passed):
+      • Delete specific TV episode: ✅ Deletes only the specified episode (with season/episode)
+      • Delete entire TV show: ✅ Deletes ALL episodes when no season/episode specified
+      • Delete movie: ✅ Deletes movie entry correctly
+      • Returns correct deletedCount in response
+      
+      Error handling (1/1 test passed):
+      • ✅ All endpoints return 400 for missing required fields
+      • ✅ Proper validation for clientId, mediaType, tmdbId parameters
+      
+      MongoDB Integration:
+      • Database: streamix
+      • Collection: watch_progress
+      • Unique index created successfully on (clientId, mediaType, tmdbId, season, episode)
+      • Aggregation pipeline for TV show grouping working correctly
+      
+      Test data used:
+      • Client ID: test-client-progress-123
+      • Movie: Fight Club (TMDB ID 550)
+      • TV Show: Breaking Bad (TMDB ID 1396)
+      
+      All Continue Watching API routes are production-ready and fully functional.
