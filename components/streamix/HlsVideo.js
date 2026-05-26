@@ -5,6 +5,8 @@ import {
   Play, Pause, Volume2, VolumeX, Volume1, Maximize, Minimize,
   PictureInPicture2, Settings, Check, Loader2, Subtitles as CCIcon,
 } from 'lucide-react';
+import { useProgressTracking } from '@/lib/useProgressTracking';
+import { useResumePlayback } from '@/lib/useResumePlayback';
 
 /**
  * HlsVideo — custom Tailwind player on top of hls.js
@@ -106,6 +108,14 @@ export default function HlsVideo({
   onSubtitleChange = null,
   subtitlesLoading = false,
   subtitlesError = null,
+  // ── Continue Watching metadata ───────────────────────────────
+  mediaType = null,
+  tmdbId = null,
+  season = null,
+  episode = null,
+  title = null,
+  posterPath = null,
+  backdropPath = null,
 }) {
   const videoRef = useRef(null);
   const wrapRef = useRef(null);
@@ -164,6 +174,25 @@ export default function HlsVideo({
   const [subtitlesOpen, setSubtitlesOpen] = useState(false); // CC popover state
   const [hoverTime, setHoverTime] = useState(null); // {sec, x} | null
   const [isBuffering, setIsBuffering] = useState(false);
+
+  // ── Continue Watching hooks (progress tracking + resume) ─────
+  const metadata = useMemo(() => ({
+    mediaType,
+    tmdbId,
+    season,
+    episode,
+    title,
+    episodeTitle: null, // TV episode title not available in current data flow
+    posterPath,
+    backdropPath,
+  }), [mediaType, tmdbId, season, episode, title, posterPath, backdropPath]);
+
+  // Only track progress when we have essential metadata
+  const trackingEnabled = !!(mediaType && tmdbId);
+  useProgressTracking(videoRef, metadata, trackingEnabled);
+
+  const { applyResume, toast: resumeToast, clearToast } = useResumePlayback(metadata);
+  const [hasAppliedResume, setHasAppliedResume] = useState(false);
 
   // Click flash (kept from prior version)
   const [flash, setFlash] = useState(null);
@@ -421,6 +450,12 @@ export default function HlsVideo({
       }
       setIsSwitching(false);
       setSwitchTargetLabel(null);
+
+      // Apply resume position from Continue Watching (only once per session)
+      if (!hasAppliedResume && !seek) {
+        applyResume(v);
+        setHasAppliedResume(true);
+      }
     };
     const onVolumeChange = () => { setVolume(v.volume); setMuted(v.muted); };
     const onRateChange = () => setPlaybackRate(v.playbackRate);
@@ -826,6 +861,17 @@ export default function HlsVideo({
           className="absolute top-3 left-1/2 -translate-x-1/2 z-30 max-w-[90%] px-3 py-2 rounded-md bg-amber-900/85 backdrop-blur border border-amber-700/40 text-amber-100 text-xs shadow-lg"
         >
           {switchToast}
+        </div>
+      )}
+
+      {/* Resume toast — "Resumed from M:SS" (3s auto-dismiss) */}
+      {resumeToast.show && (
+        <div
+          role="status"
+          className="absolute top-3 left-1/2 -translate-x-1/2 z-30 max-w-[90%] px-4 py-2 rounded-md bg-green-900/90 backdrop-blur border border-green-700/50 text-green-100 text-sm font-medium shadow-lg flex items-center gap-2"
+        >
+          <Play size={14} className="fill-green-300 text-green-300" />
+          {resumeToast.message}
         </div>
       )}
 

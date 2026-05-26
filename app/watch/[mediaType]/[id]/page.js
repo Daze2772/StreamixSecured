@@ -80,6 +80,9 @@ const WatchPage = () => {
         episode={episode}
         poster={bg}
         trailerKey={trailer?.key || null}
+        title={title}
+        posterPath={data?.poster_path || null}
+        backdropPath={data?.backdrop_path || null}
       />
 
       {/* Episode selector for TV */}

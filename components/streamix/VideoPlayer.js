@@ -59,6 +59,9 @@ const VideoPlayer = ({
   episode = 1,
   poster,
   trailerKey,
+  title = null,
+  posterPath = null,
+  backdropPath = null,
 }) => {
   // Persistence keys
   const persistKey = useMemo(
@@ -570,6 +573,13 @@ const VideoPlayer = ({
                 }}
                 subtitlesLoading={subtitles.loading}
                 subtitlesError={subtitles.error}
+                mediaType={mediaType}
+                tmdbId={tmdbId}
+                season={season}
+                episode={episode}
+                title={title}
+                posterPath={posterPath}
+                backdropPath={backdropPath}
                 onReady={() => updateStatus(serverIdx, STATUS.OK)}
                 onFatal={() => {
                   // The HLS player gave up. Try alternates (each its own
