@@ -1,5 +1,5 @@
 import { NextResponse } from 'next/server';
-import { createSession } from '@/lib/hls-sessions';
+import { createSession, ensureFfmpeg } from '@/lib/hls-sessions';
 
 /**
  * Real-Debrid resolver — Comet edition, HLS delivery.
@@ -130,9 +130,19 @@ function rankStream(filename, sizeBytes, name = '') {
   return score;
 }
 
-/** Create an HLS session and return its playlist URL + metadata for the browser. */
-function buildHlsUrl(sourceUrl, meta = {}, startOffset = 0) {
+/** Create an HLS session, probe duration synchronously, and return playlist URL + metadata. */
+async function buildHlsUrl(sourceUrl, meta = {}, startOffset = 0) {
   const session = createSession(sourceUrl, meta, startOffset);
+  // Probe synchronously so sourceDuration is available in the resolver
+  // response. Adds ~200-500ms latency but ensures the frontend gets a
+  // FIXED denominator immediately (no growing-duration flicker). Timeout
+  // at 3s to avoid hanging the entire resolve — if probe fails we return
+  // null and the frontend gracefully falls back to growing-duration.
+  try {
+    await ensureFfmpeg(session);
+  } catch (e) {
+    console.warn(`[RD] Duration probe failed for session ${session.id}:`, e?.message);
+  }
   return {
     streamUrl: `/api/stream/hls/${session.id}/index.m3u8`,
     sourceDuration: session.sourceDuration || null,
@@ -343,7 +353,7 @@ export async function GET(request) {
 
     // Build an HLS playlist URL so the browser plays via hls.js — works for
     // every codec the source might have (we transcode if needed).
-    const hlsResult = buildHlsUrl(chosen.url, {
+    const hlsResult = await buildHlsUrl(chosen.url, {
       filename: chosen.filename,
       sizeBytes: chosen.sizeBytes,
       quality: chosen.name,
@@ -367,13 +377,13 @@ export async function GET(request) {
       if (qualityByRes[res]) continue;
       qualityByRes[res] = c;
     }
-    const qualities = RES_ORDER
-      .map((label) => {
+    const qualitiesPromises = RES_ORDER
+      .map(async (label) => {
         const entry = qualityByRes[label];
         if (!entry) return null;
         const result = entry.url === chosen.url
           ? hlsResult
-          : buildHlsUrl(entry.url, {
+          : await buildHlsUrl(entry.url, {
               filename: entry.filename,
               sizeBytes: entry.sizeBytes,
               quality: entry.name,
@@ -392,7 +402,8 @@ export async function GET(request) {
           directUrl: entry.url,
           sourceDuration: result.sourceDuration,
         };
-      })
+      });
+    const qualities = (await Promise.all(qualitiesPromises))
       .filter(Boolean)
       .slice(0, 4);
 
@@ -425,20 +436,22 @@ export async function GET(request) {
       // Pre-ranked alternates the client can rotate to if the top HLS
       // session fails for any reason (e.g., ffmpeg refused to demux this
       // particular source). Each alternate gets its own HLS session.
-      alternates: alternates.slice(0, 5).map((s) => {
-        const result = buildHlsUrl(s.url, {
-          filename: s.filename, sizeBytes: s.sizeBytes, quality: s.name,
-        }, startOffset);
-        return {
-          streamUrl: result.streamUrl,
-          streamType: 'hls',
-          directUrl: s.url,
-          filename: s.filename || s.name,
-          quality: s.name,
-          sizeBytes: s.sizeBytes,
-          sourceDuration: result.sourceDuration,
-        };
-      }),
+      alternates: await Promise.all(
+        alternates.slice(0, 5).map(async (s) => {
+          const result = await buildHlsUrl(s.url, {
+            filename: s.filename, sizeBytes: s.sizeBytes, quality: s.name,
+          }, startOffset);
+          return {
+            streamUrl: result.streamUrl,
+            streamType: 'hls',
+            directUrl: s.url,
+            filename: s.filename || s.name,
+            quality: s.name,
+            sizeBytes: s.sizeBytes,
+            sourceDuration: result.sourceDuration,
+          };
+        })
+      ),
     });
   } catch (error) {
     console.error('[RD] Error:', error.message);
