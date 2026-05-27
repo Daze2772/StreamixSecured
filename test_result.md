@@ -1143,3 +1143,58 @@ agent_communication:
           9. Seek backwards out of last 20s → overlay disappears
           10. After clicking "Play Now": audio language preference (Phase 2
               localStorage `streamix.audioLang`) preserved on next episode
+
+
+  - task: "Phase 4 Hotfix Issue 1 — 'Back to Home' navigation latency (iPhone Safari)"
+    implemented: true
+    working: "NA"
+    file: "/app/app/watch/[mediaType]/[id]/page.js"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+      - working: "NA"
+        agent: "main"
+        comment: |
+          IMPLEMENTED — awaiting user iPhone 16 validation
+          (frontend testing agent is OFF-LIMITS per user instructions).
+
+          PROBLEM:
+          Clicking "Back to Home" caused a 20+ second pause on iPhone 16
+          before the home page actually appeared. Root cause: React's
+          synchronous unmount of HlsVideo runs `hls.destroy()` + `video
+          .removeAttribute('src'); video.load()` — on iOS Safari this
+          blocks the UI thread while the WebKit media decoder flushes
+          buffers and aborts dozens of in-flight HLS fragment XHRs.
+
+          FIX (in /app/app/watch/[mediaType]/[id]/page.js):
+          1. New `handleBackHome(e)` function:
+             • Synchronously pauses + detaches the <video> element BEFORE
+               navigation. This causes hls.js to abort fragment XHRs and
+               iOS to release the media decoder immediately.
+             • Then schedules `router.push('/')` via queueMicrotask so the
+               teardown completes before navigation reconciliation begins.
+             • By the time React unmounts HlsVideo, the cleanup is a
+               no-op (no source, no in-flight requests) → fast unmount.
+          2. Wired BOTH "Back to Home" buttons (top sticky bar + bottom
+             details section) to `handleBackHome` instead of the inline
+             `() => router.push('/')`.
+
+          DO-NOT-TOUCH boundaries respected:
+          • Phase 1 English-audio detection: untouched
+          • Phase 2 audio switching backend & UI: untouched
+          • Phase 3 Up-Next overlay logic: untouched
+          • HlsVideo's existing hls-effect cleanup chain: untouched
+            (still runs, but now finds nothing to clean up)
+          • iOS fullscreen logic, /api/stream/proxy, Comet manifest URL:
+            untouched
+
+          USER TESTING CHECKLIST (iPhone 16):
+          1. Open any movie/episode → click Play → wait for HLS to start
+          2. Click "Back to Home" (top bar) → should be IMMEDIATE
+             (no perceptible delay). Previously: 20+ seconds.
+          3. Open another title → click "Back to Home" (bottom details
+             section) → also IMMEDIATE.
+          4. Open a title → DON'T click Play (no video element yet) →
+             click Back → still IMMEDIATE (handler is a no-op when no
+             <video> is present).

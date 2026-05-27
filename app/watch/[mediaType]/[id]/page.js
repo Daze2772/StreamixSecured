@@ -123,13 +123,38 @@ const WatchPage = () => {
     window.scrollTo({ top: 0, behavior: 'smooth' });
   };
 
+  // Back to Home — synchronously release the <video> + hls.js BEFORE
+  // navigating so React's unmount cleanup isn't stuck waiting on iOS
+  // Safari to flush the media decoder + abort dozens of in-flight HLS
+  // fragment XHRs. On iPhone, leaving this to the React effect cleanup
+  // alone causes a 10–20s blocked UI thread between click and the home
+  // page appearing. Eagerly tearing the video down here turns the
+  // upcoming unmount into a no-op so navigation feels instant.
+  const handleBackHome = (e) => {
+    if (e) { try { e.preventDefault(); } catch (_) {} }
+    try {
+      const v = document.querySelector('video');
+      if (v) {
+        try { v.pause(); } catch (_) {}
+        try { v.removeAttribute('src'); } catch (_) {}
+        try { v.load(); } catch (_) {}
+      }
+    } catch (_) {}
+    // Defer the actual push by one microtask so the synchronous video
+    // teardown above gets a chance to release decoder resources first.
+    // Without this, on iOS the navigation reconciliation can still
+    // overlap the (still-running) cleanup. queueMicrotask runs before
+    // the next paint so the user perceives no extra delay.
+    queueMicrotask(() => { try { router.push('/'); } catch (_) { router.push('/'); } });
+  };
+
   return (
     <main className="min-h-screen bg-black text-white">
       {/* Top bar */}
       <div className="hide-landscape-phone sticky top-0 z-40 bg-black/95 backdrop-blur border-b border-white/5">
         <div className="flex items-center justify-between px-4 md:px-8 h-14">
           <button
-            onClick={() => router.push('/')}
+            onClick={handleBackHome}
             className="flex items-center gap-2 text-sm font-medium text-neutral-200 hover:text-white"
           >
             <ArrowLeft className="w-5 h-5" /> Back to Home
@@ -231,7 +256,7 @@ const WatchPage = () => {
                 </div>
               )}
               <Button
-                onClick={() => router.push('/')}
+                onClick={handleBackHome}
                 variant="secondary"
                 className="bg-white/10 hover:bg-white/20 border border-white/10"
               >
