@@ -128,6 +128,14 @@ const VideoPlayer = ({
   //   channels:6}, ...]). Empty array if probe failed or single-audio.
   // - `currentAudioIndex` (Phase 2) is the actively-playing audio track
   //   index (0-based). Updated on audio switches.
+  // - `currentSourceUrl` (Phase 4 hotfix) is the Real-Debrid / Comet
+  //   playback URL backing the CURRENTLY PLAYING HLS session. Persists
+  //   across audio switches (audio swap re-spawns the session for the
+  //   same source) and updates on quality / alternate swap. Used by
+  //   onAudioChange to re-mint an HLS session — previously this was
+  //   looked up via `qualities.find(...) || alternates.find(...)`, which
+  //   broke after the first audio switch because `premium.url` then
+  //   pointed at a brand-new session URL that was in neither list.
   const [premium, setPremium] = useState({
     state: 'idle', url: null, quality: null, title: null, error: null,
     alternates: [], altIndex: 0, qualities: [],
@@ -141,6 +149,7 @@ const VideoPlayer = ({
     sourceDuration: null,
     audioStreams: [],
     currentAudioIndex: null,
+    currentSourceUrl: null,
   });
   const premiumCacheRef = useRef(new Map());
   // initialResume should only fire the resume path on the FIRST resolver
@@ -237,7 +246,7 @@ const VideoPlayer = ({
   // ────────────────────────────────────────────────────────────
   useEffect(() => {
     if (!activeServer.isPremium) {
-      setPremium((p) => (p.state === 'idle' ? p : { state: 'idle', url: null, quality: null, title: null, error: null, alternates: [], altIndex: 0, qualities: [], sessionStartOffset: 0, sourceDuration: null, audioStreams: [], currentAudioIndex: null }));
+      setPremium((p) => (p.state === 'idle' ? p : { state: 'idle', url: null, quality: null, title: null, error: null, alternates: [], altIndex: 0, qualities: [], sessionStartOffset: 0, sourceDuration: null, audioStreams: [], currentAudioIndex: null, currentSourceUrl: null }));
       return;
     }
     if (!playerActive || showTrailer) return;
@@ -254,7 +263,7 @@ const VideoPlayer = ({
     const controller = new AbortController();
     const timeoutId = setTimeout(() => controller.abort(), PREMIUM_TIMEOUT_MS);
 
-    setPremium({ state: 'loading', url: null, quality: null, title: null, error: null, alternates: [], altIndex: 0, qualities: [], sessionStartOffset: 0, sourceDuration: null, audioStreams: [], currentAudioIndex: null });
+    setPremium({ state: 'loading', url: null, quality: null, title: null, error: null, alternates: [], altIndex: 0, qualities: [], sessionStartOffset: 0, sourceDuration: null, audioStreams: [], currentAudioIndex: null, currentSourceUrl: null });
     updateStatus(serverIdx, STATUS.LOADING);
     setToast(null);
 
@@ -294,6 +303,7 @@ const VideoPlayer = ({
             sourceDuration: null,
             audioStreams: [],
             currentAudioIndex: null,
+            currentSourceUrl: data.directUrl || data.sourceUrl || null,
           };
           premiumCacheRef.current.set(cacheKey, payload);
           setPremium({ state: 'ok', ...payload, error: null, altIndex: 0 });
@@ -302,7 +312,7 @@ const VideoPlayer = ({
         .catch(err => {
           if (cancelled) return;
           console.error(`[Premium AD] Error:`, err);
-          setPremium({ state: 'error', url: null, quality: null, title: null, error: err.message, alternates: [], altIndex: 0, qualities: [], sessionStartOffset: 0, sourceDuration: null, audioStreams: [], currentAudioIndex: null });
+          setPremium({ state: 'error', url: null, quality: null, title: null, error: err.message, alternates: [], altIndex: 0, qualities: [], sessionStartOffset: 0, sourceDuration: null, audioStreams: [], currentAudioIndex: null, currentSourceUrl: null });
           updateStatus(serverIdx, STATUS.FAILED);
           triedAutoSwitchRef.current.add(serverIdx);
           setToast({ kind: 'error', msg: `AllDebrid: ${err.message}` });
@@ -349,6 +359,13 @@ const VideoPlayer = ({
           sourceDuration: typeof data.sourceDuration === 'number' ? data.sourceDuration : null,
           audioStreams: Array.isArray(data.audioStreams) ? data.audioStreams : [],
           currentAudioIndex: typeof data.selectedAudioIndex === 'number' ? data.selectedAudioIndex : null,
+          // Phase 4 hotfix: track the underlying RD/Comet source URL so
+          // subsequent audio switches always know what to feed back into
+          // /api/stream/hls/session (instead of trying to look it up via
+          // a stale `qualities`/`alternates` table — which broke after
+          // the first switch because `url` then points at a new HLS
+          // session URL that's in neither list).
+          currentSourceUrl: data.directUrl || null,
         };
         premiumCacheRef.current.set(cacheKey, payload);
         setPremium({ state: 'ok', ...payload, error: null, altIndex: 0 });
@@ -359,7 +376,7 @@ const VideoPlayer = ({
         const msg = e.name === 'AbortError'
           ? 'Premium resolution timed out.'
           : (e.message || 'Premium resolution failed.');
-        setPremium({ state: 'error', url: null, quality: null, title: null, error: msg, alternates: [], altIndex: 0, qualities: [], sessionStartOffset: 0, sourceDuration: null, audioStreams: [], currentAudioIndex: null });
+        setPremium({ state: 'error', url: null, quality: null, title: null, error: msg, alternates: [], altIndex: 0, qualities: [], sessionStartOffset: 0, sourceDuration: null, audioStreams: [], currentAudioIndex: null, currentSourceUrl: null });
         updateStatus(serverIdx, STATUS.FAILED);
         triedAutoSwitchRef.current.add(serverIdx);
         setToast({
@@ -513,7 +530,7 @@ const VideoPlayer = ({
     if (activeServer.isPremium) {
       const cacheKey = `${mediaType}:${tmdbId}:${season}:${episode}`;
       premiumCacheRef.current.delete(cacheKey);
-      setPremium({ state: 'idle', url: null, quality: null, title: null, error: null, qualities: [], sessionStartOffset: 0, sourceDuration: null, audioStreams: [], currentAudioIndex: null });
+      setPremium({ state: 'idle', url: null, quality: null, title: null, error: null, qualities: [], sessionStartOffset: 0, sourceDuration: null, audioStreams: [], currentAudioIndex: null, currentSourceUrl: null });
     }
     setIframeKey((k) => k + 1);
   };
@@ -627,18 +644,24 @@ const VideoPlayer = ({
                   // Phase 2: Mid-playback audio track switch. Creates a fresh
                   // HLS session at the current real-world position with the
                   // chosen audio track. Same pattern as quality switch path #3.
+                  //
+                  // Phase 4 hotfix: use `premium.currentSourceUrl` instead of
+                  // looking up the directUrl via the (now-stale) qualities /
+                  // alternates arrays. After the FIRST audio switch, `premium
+                  // .url` points at a brand-new HLS session URL that is NOT
+                  // in either list, so the old lookup returned null and
+                  // every subsequent switch silently bailed out (Issue #3).
                   const videoEl = document.querySelector('video');
                   if (!videoEl) return;
                   const realTime = (videoEl.currentTime || 0) + (premium.sessionStartOffset || 0);
                   try {
-                    // Find the direct source URL from the current quality/alternate
-                    // or fall back to the resolver's directUrl. Quality options
-                    // and alternates both have directUrl for re-session-minting.
-                    const sourceUrl = premium.qualities?.find(q => q.streamUrl === premium.url)?.directUrl
+                    const sourceUrl = premium.currentSourceUrl
+                      || premium.qualities?.find(q => q.streamUrl === premium.url)?.directUrl
                       || premium.alternates?.find(a => a.streamUrl === premium.url)?.directUrl
                       || null;
                     if (!sourceUrl) {
                       console.warn('[Audio switch] No directUrl available for re-session; audio switch requires directUrl');
+                      setToast({ kind: 'error', msg: 'Cannot switch audio — source URL unavailable' });
                       return;
                     }
                     const res = await fetch('/api/stream/hls/session', {
@@ -661,8 +684,14 @@ const VideoPlayer = ({
                       url: data.streamUrl,
                       sessionStartOffset: Number(data.startOffset) || realTime,
                       sourceDuration: typeof data.sourceDuration === 'number' ? data.sourceDuration : p.sourceDuration,
-                      audioStreams: Array.isArray(data.audioStreams) ? data.audioStreams : p.audioStreams,
+                      audioStreams: Array.isArray(data.audioStreams) && data.audioStreams.length > 0 ? data.audioStreams : p.audioStreams,
                       currentAudioIndex: typeof data.selectedAudioIndex === 'number' ? data.selectedAudioIndex : newIndex,
+                      // Audio switch DOES NOT change the underlying source —
+                      // we're re-encoding the same RD URL with a different
+                      // -map 0:a:N. Preserve currentSourceUrl explicitly so
+                      // subsequent switches still find it. (The spread ...p
+                      // already does this but we make the intent obvious.)
+                      currentSourceUrl: p.currentSourceUrl || sourceUrl,
                     }));
                   } catch (e) {
                     console.warn('[Audio switch] Failed:', e?.message);
@@ -715,8 +744,12 @@ const VideoPlayer = ({
                       url: data.streamUrl,
                       sessionStartOffset: Number(data.startOffset) || realTime,
                       sourceDuration: typeof data.sourceDuration === 'number' ? data.sourceDuration : p.sourceDuration,
-                      audioStreams: Array.isArray(data.audioStreams) ? data.audioStreams : p.audioStreams,
+                      audioStreams: Array.isArray(data.audioStreams) && data.audioStreams.length > 0 ? data.audioStreams : p.audioStreams,
                       currentAudioIndex: typeof data.selectedAudioIndex === 'number' ? data.selectedAudioIndex : p.currentAudioIndex,
+                      // Quality swap → different file at a different RD URL.
+                      // Update currentSourceUrl so subsequent audio switches
+                      // re-seed against the new source.
+                      currentSourceUrl: target.directUrl,
                     }));
                   } catch (e) {
                     // Per spec: if fresh-session creation fails, fall back
@@ -727,7 +760,7 @@ const VideoPlayer = ({
                     // next page load.
                     // TODO: surface this fallback with a toast.
                     console.warn('[Quality swap] new-session creation failed; falling back to pre-built URL:', e?.message);
-                    setPremium((p) => ({ ...p, url: target.streamUrl }));
+                    setPremium((p) => ({ ...p, url: target.streamUrl, currentSourceUrl: target.directUrl || p.currentSourceUrl }));
                   }
                 }}
                 subtitleTracks={subtitles.available}
@@ -766,6 +799,10 @@ const VideoPlayer = ({
                       quality: a.quality || a.filename,
                       title: a.filename || '',
                       altIndex: nextAlt,
+                      // Alternate rotation = different source file = different
+                      // RD URL. Refresh currentSourceUrl so post-rotation
+                      // audio switches re-seed against the new source.
+                      currentSourceUrl: a.directUrl || prev.currentSourceUrl,
                     }));
                     return;
                   }

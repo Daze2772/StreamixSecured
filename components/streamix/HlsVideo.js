@@ -205,6 +205,14 @@ export default function HlsVideo({
   const [settingsView, setSettingsView] = useState('main'); // main | speed | quality
   const [subtitlesOpen, setSubtitlesOpen] = useState(false); // CC popover state
   const [audioOpen, setAudioOpen] = useState(false); // Audio popover state (Phase 2)
+  // Phase 4 hotfix: in-flight audio switch state. While truthy, the audio
+  // popover items are disabled to prevent overlapping switch requests, and
+  // the row the user clicked gets a spinner. We track `pendingAudioIndex`
+  // separately so we know which row to spin and when to clear the state
+  // (when `currentAudioIndex` prop arrives at the requested value). A
+  // safety timeout clears it after 30s in case the network fails silently.
+  const [pendingAudioIndex, setPendingAudioIndex] = useState(null);
+  const audioSwitchTimerRef = useRef(null);
   const [hoverTime, setHoverTime] = useState(null); // {sec, x} | null
   const [isBuffering, setIsBuffering] = useState(false);
 
@@ -233,6 +241,29 @@ export default function HlsVideo({
     setNextUpDismissed(false);
     nextUpFiredRef.current = false;
   }, [mediaType, tmdbId, season, episode]);
+
+  // ── Phase 4 hotfix: clear pending audio-switch state on completion ─
+  // The audio switch flow is: user clicks → setPendingAudioIndex(N) →
+  // onAudioChange(N) → parent fetches /api/stream/hls/session → parent
+  // updates `currentAudioIndex` to N. When the prop catches up, the
+  // switch is done — clear the spinner & re-enable the menu. We also
+  // clear when pendingAudioIndex is null (initial render) so this is
+  // a no-op then.
+  useEffect(() => {
+    if (pendingAudioIndex == null) return;
+    if (currentAudioIndex === pendingAudioIndex) {
+      setPendingAudioIndex(null);
+      if (audioSwitchTimerRef.current) {
+        clearTimeout(audioSwitchTimerRef.current);
+        audioSwitchTimerRef.current = null;
+      }
+    }
+  }, [currentAudioIndex, pendingAudioIndex]);
+
+  // Cleanup timer on unmount
+  useEffect(() => () => {
+    if (audioSwitchTimerRef.current) clearTimeout(audioSwitchTimerRef.current);
+  }, []);
 
   // Derive the canonical "remaining seconds" using the same convention
   // the scrubber + saved-progress code uses: realTime = currentTime +
@@ -1397,9 +1428,11 @@ export default function HlsVideo({
                   className={`h-11 w-11 sm:h-9 sm:w-9 grid place-items-center rounded hover:bg-white/15 transition-colors ${
                     audioOpen ? 'bg-white/15' : 'opacity-60 hover:opacity-100'
                   }`}
-                  title="Audio language"
+                  title={pendingAudioIndex != null ? 'Switching audio…' : 'Audio language'}
                 >
-                  <Languages size={22} />
+                  {pendingAudioIndex != null
+                    ? <Loader2 size={22} className="animate-spin text-amber-300" />
+                    : <Languages size={22} />}
                 </button>
                 
                 {/* Audio Popover */}
@@ -1422,10 +1455,30 @@ export default function HlsVideo({
                           const langName = getAudioLanguageName(stream.language, stream.audioIndex);
                           const channels = formatChannels(stream.channels);
                           const isActive = stream.audioIndex === currentAudioIndex;
+                          const isPending = stream.audioIndex === pendingAudioIndex;
+                          const isSwitching = pendingAudioIndex != null;
                           return (
                             <button
                               key={stream.audioIndex}
+                              disabled={isSwitching}
                               onClick={() => {
+                                // Prevent click-during-switch noise (the popover is
+                                // disabled below but defensively guard the handler too).
+                                if (pendingAudioIndex != null) return;
+                                if (stream.audioIndex === currentAudioIndex) {
+                                  // Already on this track — just close.
+                                  setAudioOpen(false);
+                                  return;
+                                }
+                                setPendingAudioIndex(stream.audioIndex);
+                                // Safety net: if the parent never updates
+                                // currentAudioIndex (network fail or backend
+                                // error), clear pending state after 30s.
+                                if (audioSwitchTimerRef.current) clearTimeout(audioSwitchTimerRef.current);
+                                audioSwitchTimerRef.current = setTimeout(() => {
+                                  setPendingAudioIndex(null);
+                                  audioSwitchTimerRef.current = null;
+                                }, 30000);
                                 if (onAudioChange) onAudioChange(stream.audioIndex);
                                 setAudioOpen(false);
                                 // Save to localStorage
@@ -1437,12 +1490,18 @@ export default function HlsVideo({
                                   }
                                 }
                               }}
-                              className={`flex items-center gap-2 w-full px-3 py-2 hover:bg-white/10 text-sm ${isActive ? 'bg-white/5' : ''}`}
+                              className={`flex items-center gap-2 w-full px-3 py-2 text-sm transition-colors ${
+                                isSwitching && !isPending
+                                  ? 'opacity-40 cursor-not-allowed'
+                                  : 'hover:bg-white/10'
+                              } ${isActive ? 'bg-white/5' : ''}`}
                             >
                               <span className="flex-1 text-left">
                                 {langName} · {channels}
                               </span>
-                              {isActive && <Check size={14} className="text-green-400 flex-shrink-0" />}
+                              {isPending
+                                ? <Loader2 size={14} className="text-amber-300 animate-spin flex-shrink-0" />
+                                : (isActive && <Check size={14} className="text-green-400 flex-shrink-0" />)}
                             </button>
                           );
                         })}
