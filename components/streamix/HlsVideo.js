@@ -3,7 +3,7 @@
 import { useEffect, useRef, useState, useCallback, useMemo } from 'react';
 import {
   Play, Pause, Volume2, VolumeX, Volume1, Maximize, Minimize,
-  PictureInPicture2, Settings, Check, Loader2, Subtitles as CCIcon, Languages,
+  PictureInPicture2, Settings, Check, Loader2, Subtitles as CCIcon, Languages, X,
 } from 'lucide-react';
 import { useProgressTracking } from '@/lib/useProgressTracking';
 import { getAudioLanguageName, formatChannels } from '@/lib/audioLanguageNames';
@@ -139,6 +139,15 @@ export default function HlsVideo({
   title = null,
   posterPath = null,
   backdropPath = null,
+  // ── Up-Next / Auto-play next episode ────────────────────────
+  // `nextEpisode`: { season, episode, episodeName, stillPath, overview }
+  //   computed by the watch page from TMDB season data. null for movies
+  //   and for the series finale.
+  // `onPlayNext`: callback that the watch page wires to its existing
+  //   handleSelectEpisode(s,e). Called when the countdown hits zero,
+  //   the video naturally ends, or the user clicks "Play Now".
+  nextEpisode = null,
+  onPlayNext = null,
 }) {
   const videoRef = useRef(null);
   const wrapRef = useRef(null);
@@ -198,6 +207,81 @@ export default function HlsVideo({
   const [audioOpen, setAudioOpen] = useState(false); // Audio popover state (Phase 2)
   const [hoverTime, setHoverTime] = useState(null); // {sec, x} | null
   const [isBuffering, setIsBuffering] = useState(false);
+
+  // ── Up-Next overlay state (Phase 3) ──────────────────────────
+  // `nextUpDismissed`: user clicked the X — suppresses the overlay for the
+  //   rest of THIS episode's play session. Resets on episode/season change.
+  // `nextUpFiredRef`: latched as soon as we call `onPlayNext()` so it
+  //   can't fire twice (e.g. countdown hits 0 *and* the `ended` event
+  //   arrives within the same tick). Reset on episode change.
+  const [nextUpDismissed, setNextUpDismissed] = useState(false);
+  const nextUpFiredRef = useRef(false);
+
+  // Latest-callback ref so the `ended` listener (registered once)
+  // always calls the current `onPlayNext` without re-attaching.
+  const onPlayNextRef = useRef(onPlayNext);
+  useEffect(() => { onPlayNextRef.current = onPlayNext; }, [onPlayNext]);
+  const nextEpisodeRef = useRef(nextEpisode);
+  useEffect(() => { nextEpisodeRef.current = nextEpisode; }, [nextEpisode]);
+  const nextUpDismissedRef = useRef(nextUpDismissed);
+  useEffect(() => { nextUpDismissedRef.current = nextUpDismissed; }, [nextUpDismissed]);
+
+  // Reset Up-Next state when the episode/season changes (i.e. the user
+  // moved on — either via the EpisodeSelector, Up-Next itself, or back
+  // navigation). Without this, the dismissal would leak across episodes.
+  useEffect(() => {
+    setNextUpDismissed(false);
+    nextUpFiredRef.current = false;
+  }, [mediaType, tmdbId, season, episode]);
+
+  // Derive the canonical "remaining seconds" using the same convention
+  // the scrubber + saved-progress code uses: realTime = currentTime +
+  // sessionStartOffset; totalDur prefers ffprobe's sourceDuration when
+  // present (it's stable across HLS segment growth).
+  const realTimeForUpNext = currentTime + (sessionStartOffset || 0);
+  const totalDurForUpNext = (sourceDuration && sourceDuration > 0)
+    ? sourceDuration
+    : (isFinite(duration) && duration > 0 ? duration + (sessionStartOffset || 0) : 0);
+  const remainingForUpNext = totalDurForUpNext > 0
+    ? Math.max(0, totalDurForUpNext - realTimeForUpNext)
+    : null;
+
+  // Trigger window: surface the overlay in the last 20 seconds. The
+  // countdown number shown to the user is `ceil(remaining)` clamped
+  // into 0..20 — it naturally pauses when the video pauses (because
+  // `currentTime` stops advancing) and rewinds if the user seeks back.
+  const showNextUp = Boolean(
+    nextEpisode &&
+    onPlayNext &&
+    !nextUpDismissed &&
+    remainingForUpNext !== null &&
+    remainingForUpNext > 0 &&
+    remainingForUpNext <= 20
+  );
+  const nextUpCountdown = showNextUp ? Math.max(0, Math.ceil(remainingForUpNext)) : null;
+
+  // Auto-fire when the countdown reaches 0. The `ended` listener above
+  // covers the case where the video ends naturally without us hitting
+  // exactly 0 in a timeupdate tick.
+  useEffect(() => {
+    if (!showNextUp) return;
+    if (nextUpCountdown !== null && nextUpCountdown <= 0 && !nextUpFiredRef.current) {
+      nextUpFiredRef.current = true;
+      try { onPlayNext && onPlayNext(); } catch (_) {}
+    }
+  }, [showNextUp, nextUpCountdown, onPlayNext]);
+
+  const handlePlayNextClick = useCallback((e) => {
+    if (e) { e.stopPropagation(); e.preventDefault(); }
+    if (nextUpFiredRef.current) return;
+    nextUpFiredRef.current = true;
+    try { onPlayNext && onPlayNext(); } catch (_) {}
+  }, [onPlayNext]);
+
+  const handleDismissNextUp = useCallback((e) => {
+    if (e) { e.stopPropagation(); e.preventDefault(); }
+    setNextUpDismissed(true);
+  }, []);
 
   // ── Continue Watching hooks (progress tracking + resume) ─────
   // metadata.sessionStartOffset is read by useProgressTracking when
@@ -561,6 +645,16 @@ export default function HlsVideo({
     const onCanPlay = () => setIsBuffering(false);
     const onEnterPip = () => setIsPiP(true);
     const onLeavePip = () => setIsPiP(false);
+    // ── Up-Next: when the video naturally finishes, jump to the next
+    // episode immediately (no countdown left to wait for). Guarded by
+    // `nextUpFiredRef` so the countdown-driven fire path can't double-up.
+    const onEnded = () => {
+      if (!nextEpisodeRef.current || !onPlayNextRef.current) return;
+      if (nextUpDismissedRef.current) return;
+      if (nextUpFiredRef.current) return;
+      nextUpFiredRef.current = true;
+      try { onPlayNextRef.current(); } catch (_) {}
+    };
 
     v.addEventListener('play', onPlay);
     v.addEventListener('pause', onPause);
@@ -575,6 +669,7 @@ export default function HlsVideo({
     v.addEventListener('canplay', onCanPlay);
     v.addEventListener('enterpictureinpicture', onEnterPip);
     v.addEventListener('leavepictureinpicture', onLeavePip);
+    v.addEventListener('ended', onEnded);
 
     return () => {
       v.removeEventListener('play', onPlay);
@@ -590,6 +685,7 @@ export default function HlsVideo({
       v.removeEventListener('canplay', onCanPlay);
       v.removeEventListener('enterpictureinpicture', onEnterPip);
       v.removeEventListener('leavepictureinpicture', onLeavePip);
+      v.removeEventListener('ended', onEnded);
     };
   }, [showControls]);
 
@@ -1020,6 +1116,66 @@ export default function HlsVideo({
         >
           <Play size={14} className="fill-green-300 text-green-300" />
           {resumeToast.message}
+        </div>
+      )}
+
+      {/* ─── Up-Next overlay (auto-play next episode) ───
+          Surfaces in the final 20 seconds when `nextEpisode` is set and
+          the user hasn't dismissed it. Sits above the gradient/controls
+          (bottom-32 keeps it clear of the controls bar), pointer-events
+          enabled so the Play Now / dismiss buttons are clickable. The
+          countdown number is driven by `remainingForUpNext` so pausing
+          the video naturally pauses the countdown. */}
+      {showNextUp && (
+        <div
+          className="absolute right-3 sm:right-6 bottom-24 sm:bottom-28 z-30 w-[280px] sm:w-[340px] rounded-lg bg-black/90 backdrop-blur-md border border-white/15 shadow-2xl overflow-hidden animate-in fade-in slide-in-from-bottom-2"
+          onClick={(e) => e.stopPropagation()}
+        >
+          {/* Header */}
+          <div className="px-3 py-2 flex items-center justify-between border-b border-white/10">
+            <span className="text-[11px] uppercase tracking-wider text-neutral-300 font-medium">
+              Up Next in {nextUpCountdown}s
+            </span>
+            <button
+              type="button"
+              aria-label="Dismiss Up Next"
+              onClick={handleDismissNextUp}
+              className="text-neutral-400 hover:text-white transition-colors p-0.5 rounded hover:bg-white/10"
+            >
+              <X size={16} />
+            </button>
+          </div>
+          {/* Episode card */}
+          <div className="flex items-stretch">
+            {nextEpisode.stillPath ? (
+              <img
+                src={nextEpisode.stillPath}
+                alt=""
+                className="w-[120px] sm:w-[140px] aspect-video object-cover flex-shrink-0 bg-neutral-900"
+                onError={(e) => { e.currentTarget.style.display = 'none'; }}
+              />
+            ) : (
+              <div className="w-[120px] sm:w-[140px] aspect-video flex-shrink-0 bg-gradient-to-br from-neutral-800 to-neutral-900 flex items-center justify-center">
+                <Play size={28} className="text-white/60 fill-white/60" />
+              </div>
+            )}
+            <div className="flex-1 p-2.5 min-w-0">
+              <div className="text-[10px] uppercase tracking-wider text-neutral-400 font-medium">
+                S{nextEpisode.season} · E{nextEpisode.episode}
+              </div>
+              <div className="text-sm font-semibold text-white mt-0.5 line-clamp-2 leading-tight">
+                {nextEpisode.episodeName}
+              </div>
+            </div>
+          </div>
+          {/* Action button */}
+          <button
+            type="button"
+            onClick={handlePlayNextClick}
+            className="w-full py-2.5 bg-white text-black font-semibold text-sm hover:bg-neutral-200 transition-colors flex items-center justify-center gap-2 active:scale-[0.98]"
+          >
+            <Play size={14} className="fill-black" /> Play Now
+          </button>
         </div>
       )}
 

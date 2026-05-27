@@ -1082,3 +1082,64 @@ agent_communication:
       Phase 2 audio track selector is production-ready and fully functional.
       All endpoints working correctly with proper validation, fallback, and error handling.
 
+
+
+  - task: "Phase 3 Auto-Play Next Episode — Netflix-style Up-Next overlay with countdown"
+    implemented: true
+    working: "NA"
+    file: "/app/app/watch/[mediaType]/[id]/page.js, /app/components/streamix/VideoPlayer.js, /app/components/streamix/HlsVideo.js"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+      - working: "NA"
+        agent: "main"
+        comment: |
+          IMPLEMENTED — awaiting user iPhone 16 validation (frontend testing agent
+          is OFF-LIMITS per user instructions).
+
+          WHAT WAS BUILT:
+          1) WatchPage (/app/app/watch/[mediaType]/[id]/page.js):
+             • Fetches currentSeasonData + nextSeasonData via tmdb.tvSeason()
+             • Computes `nextEpisode` memo handling both same-season and
+               cross-season cases. Returns null for movies / series finale.
+             • Wires `onPlayNext` to existing handleSelectEpisode(s,e).
+
+          2) VideoPlayer: pass-through of nextEpisode + onPlayNext to HlsVideo.
+
+          3) HlsVideo (~110 lines added):
+             • New props: nextEpisode, onPlayNext
+             • State: nextUpDismissed + nextUpFiredRef (latch)
+             • Refs to keep `ended` listener stable while letting it call
+               latest onPlayNext
+             • Reset on [mediaType, tmdbId, season, episode]
+             • Trigger window: last 20s of effectiveTotal (uses sourceDuration
+               when available, else duration + sessionStartOffset — same
+               convention as scrubber/progress code)
+             • Countdown number = ceil(remaining), naturally pauses with
+               video pause (since currentTime stops advancing)
+             • Auto-fires onPlayNext when countdown ≤ 0 OR `ended` event
+             • Latched via nextUpFiredRef so double-fires are impossible
+             • Overlay UI: bottom-right card with episode still, S/E label,
+               title, X to dismiss, "Play Now" button. Mobile-responsive
+               (280px → 340px). z-30 above gradient, below menus.
+             • Click-stop on the overlay so taps don't trigger play/pause.
+
+          DO-NOT-TOUCH boundaries respected:
+          • Phase 1 English-audio detection: untouched
+          • Phase 2 audio switching: untouched
+          • -ss placement, audio mapping, subtitle offsets: untouched
+          • Continue Watching, iOS fullscreen, hls.js init: untouched
+
+          USER TESTING CHECKLIST (iPhone 16):
+          1. Open a TV series, seek to last 20s of an episode → overlay appears
+          2. Wait for countdown → next episode auto-plays
+          3. Click "Play Now" → next episode plays immediately
+          4. Click X → overlay dismissed for this episode
+          5. Movie → no overlay (verify)
+          6. Last episode of last season → no overlay
+          7. Cross-season: last episode of season X → overlay shows S(X+1) E1
+          8. Pause video during countdown → countdown halts
+          9. Seek backwards out of last 20s → overlay disappears
+          10. After clicking "Play Now": audio language preference (Phase 2
+              localStorage `streamix.audioLang`) preserved on next episode

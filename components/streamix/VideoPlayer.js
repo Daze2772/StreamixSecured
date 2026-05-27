@@ -70,6 +70,17 @@ const VideoPlayer = ({
   // the FIRST mount per route (the parent watch page snapshots it from
   // the URL once).
   initialResume = 0,
+  // ── Up-Next / Auto-play next episode ──────────────────────────
+  // `nextEpisode` is a descriptor of the episode that should play
+  // next; the watch page computes it from TMDB season data. When
+  // set, the player will surface a Netflix-style "Up Next" overlay
+  // in the final seconds of the current episode and call
+  // `onPlayNext()` either when the user clicks "Play Now" or when
+  // the countdown reaches zero / the video ends. Movies and the
+  // last episode of the last season get `null` and never see the
+  // overlay.
+  nextEpisode = null,
+  onPlayNext = null,
 }) => {
   // Persistence keys
   const persistKey = useMemo(
@@ -733,6 +744,8 @@ const VideoPlayer = ({
                 title={title}
                 posterPath={posterPath}
                 backdropPath={backdropPath}
+                nextEpisode={nextEpisode}
+                onPlayNext={onPlayNext}
                 onReady={() => updateStatus(serverIdx, STATUS.OK)}
                 onFatal={() => {
                   // The HLS player gave up. Try alternates (each its own

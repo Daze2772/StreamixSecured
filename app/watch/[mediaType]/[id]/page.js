@@ -20,6 +20,12 @@ const WatchPage = () => {
   const [season, setSeason] = useState(parseInt(searchParams.get('s') || '1', 10));
   const [episode, setEpisode] = useState(parseInt(searchParams.get('e') || '1', 10));
 
+  // Current + next season episode lists — used to compute `nextEpisode`
+  // (poster, title) for the Up-Next countdown overlay. Both are nullable
+  // until TMDB resolves; the overlay simply doesn't appear without data.
+  const [currentSeasonData, setCurrentSeasonData] = useState(null);
+  const [nextSeasonData, setNextSeasonData] = useState(null);
+
   // Resume offset (seconds) — when arriving via a Continue Watching card,
   // the URL carries `?resume=<seconds>` so we can spin up an HLS session
   // that starts at the saved real-world position. We only honour this on
@@ -42,6 +48,63 @@ const WatchPage = () => {
     });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [mediaType, id]);
+
+  // Fetch current season's episode list (for Up-Next title/still) +
+  // prefetch next season's first episode info for cross-boundary jumps.
+  useEffect(() => {
+    if (mediaType !== 'tv' || !id || !season) {
+      setCurrentSeasonData(null);
+      setNextSeasonData(null);
+      return;
+    }
+    let cancelled = false;
+    tmdb.tvSeason(id, season).then((sd) => {
+      if (!cancelled) setCurrentSeasonData(sd);
+    });
+    tmdb.tvSeason(id, season + 1).then((sd) => {
+      if (!cancelled) setNextSeasonData(sd && sd.episodes?.length ? sd : null);
+    });
+    return () => { cancelled = true; };
+  }, [mediaType, id, season]);
+
+  // Compute the next-episode descriptor for the Up-Next overlay.
+  //   • Same-season:    (season, episode+1) with name/still from currentSeasonData
+  //   • Cross-season:   (season+1, 1) with name/still from nextSeasonData
+  //   • Series finale:  null
+  //   • Movies:         null
+  const nextEpisode = useMemo(() => {
+    if (mediaType !== 'tv' || !data) return null;
+    // Same-season next
+    const eps = currentSeasonData?.episodes || [];
+    const sameSeasonNext = eps.find((ep) => ep.episode_number === episode + 1);
+    if (sameSeasonNext) {
+      return {
+        season,
+        episode: sameSeasonNext.episode_number,
+        episodeName: sameSeasonNext.name || `Episode ${sameSeasonNext.episode_number}`,
+        stillPath: sameSeasonNext.still_path
+          ? `https://image.tmdb.org/t/p/w300${sameSeasonNext.still_path}`
+          : null,
+        overview: sameSeasonNext.overview || '',
+      };
+    }
+    // Cross-season — current episode is at/past last in season
+    const lastNum = eps.length ? Math.max(...eps.map((e) => e.episode_number)) : 0;
+    if (lastNum > 0 && episode >= lastNum && nextSeasonData?.episodes?.length) {
+      const first = nextSeasonData.episodes.find((e) => e.episode_number === 1)
+        || nextSeasonData.episodes[0];
+      return {
+        season: season + 1,
+        episode: first.episode_number || 1,
+        episodeName: first.name || `Season ${season + 1} · Episode 1`,
+        stillPath: first.still_path
+          ? `https://image.tmdb.org/t/p/w300${first.still_path}`
+          : null,
+        overview: first.overview || '',
+      };
+    }
+    return null;
+  }, [mediaType, data, currentSeasonData, nextSeasonData, season, episode]);
 
   const trailer = useMemo(() => pickTrailer(data?.videos?.results), [data]);
   const title = data?.title || data?.name || 'Loading…';
@@ -94,6 +157,8 @@ const WatchPage = () => {
         posterPath={data?.poster_path || null}
         backdropPath={data?.backdrop_path || null}
         initialResume={initialResume}
+        nextEpisode={nextEpisode}
+        onPlayNext={nextEpisode ? () => handleSelectEpisode(nextEpisode.season, nextEpisode.episode) : null}
       />
 
       {/* Episode selector for TV */}
