@@ -2,12 +2,17 @@
 
 import { useEffect, useState } from 'react';
 import { backdrop } from '@/lib/tmdb';
-import { Play, Info, Star } from 'lucide-react';
+import { Play, Info, Star, Loader2 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { useRouter } from 'next/navigation';
 
 const Hero = ({ items, onMoreInfo }) => {
   const [index, setIndex] = useState(0);
+  // Visible feedback for the Play tap — same idea as DetailModal. The
+  // user sees a spinner the instant they click, even if the watch page
+  // takes a moment to mount on a slow connection. Resets whenever the
+  // hero swaps to a new slide (so re-clicking another slide is fine).
+  const [navigating, setNavigating] = useState(false);
   const router = useRouter();
 
   useEffect(() => {
@@ -27,8 +32,11 @@ const Hero = ({ items, onMoreInfo }) => {
   // displayed hero item. The carousel rotates every 8s so we re-prefetch
   // each new slide. Cuts the Play→watch latency on iOS Safari from a
   // cold-bundle 2-4s to a warm-cache ~200ms.
+  // Also resets the per-tap `navigating` spinner when the slide rotates
+  // so a leftover loading state from a previous slide doesn't linger.
   useEffect(() => {
     if (!safeItem?.id || !safeMediaType) return;
+    setNavigating(false);
     try { router.prefetch(`/watch/${safeMediaType}/${safeItem.id}`); } catch (_) {}
   }, [safeItem?.id, safeMediaType, router]);
 
@@ -82,13 +90,31 @@ const Hero = ({ items, onMoreInfo }) => {
             <Button
               size="lg"
               onClick={() => {
+                if (navigating) return;
+                // Flip the button into the loading state immediately so
+                // the user sees the spinner the same tick they tap.
+                // Prevents the "did my click register?" confusion on
+                // iOS Safari + slow connections.
+                setNavigating(true);
                 // Prefetched on mount + per-slide; this push lands on a
                 // warm app-router cache.
                 router.push(`/watch/${mediaType}/${item.id}`);
               }}
-              className="bg-white text-black hover:bg-white/90 font-bold text-base px-6 md:px-8 h-11 md:h-12"
+              disabled={navigating}
+              aria-busy={navigating || undefined}
+              className="bg-white text-black hover:bg-white/90 disabled:opacity-95 disabled:cursor-wait font-bold text-base px-6 md:px-8 h-11 md:h-12"
             >
-              <Play className="w-5 h-5 mr-2 fill-black" /> Play
+              {navigating ? (
+                <>
+                  <Loader2 className="w-5 h-5 mr-2 animate-spin" />
+                  Loading…
+                </>
+              ) : (
+                <>
+                  <Play className="w-5 h-5 mr-2 fill-black" />
+                  Play
+                </>
+              )}
             </Button>
             <Button
               size="lg"

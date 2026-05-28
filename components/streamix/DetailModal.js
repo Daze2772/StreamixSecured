@@ -3,7 +3,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { Dialog, DialogContent } from '@/components/ui/dialog';
 import { tmdb, backdrop, img, pickTrailer } from '@/lib/tmdb';
-import { Play, Plus, Star, X, Calendar, Clock, Film, Youtube } from 'lucide-react';
+import { Play, Plus, Star, X, Calendar, Clock, Film, Youtube, Loader2 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { useRouter } from 'next/navigation';
 import MovieCard from './MovieCard';
@@ -12,17 +12,26 @@ const DetailModal = ({ open, onOpenChange, item, onCardClick }) => {
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(false);
   const [playTrailer, setPlayTrailer] = useState(false);
+  // Visible feedback the moment the user taps Play Now. Even on a hot
+  // app-router cache, the watch page's TMDB details fetch + initial
+  // render can take 1-2s on iOS Safari, and on slow connections this
+  // gets worse. Without a button-side affordance the user wonders if
+  // their tap registered and frequently double-taps. The flag flips
+  // back automatically when the modal closes (effect below).
+  const [navigating, setNavigating] = useState(false);
   const router = useRouter();
 
   useEffect(() => {
     if (!open || !item) {
       setPlayTrailer(false);
+      setNavigating(false);
       return;
     }
     const mediaType = item.media_type || (item.first_air_date ? 'tv' : 'movie');
     setLoading(true);
     setData(null);
     setPlayTrailer(false);
+    setNavigating(false);
     tmdb.details(mediaType, item.id).then((d) => {
       setData(d ? { ...d, _media_type: mediaType } : null);
       setLoading(false);
@@ -53,22 +62,35 @@ const DetailModal = ({ open, onOpenChange, item, onCardClick }) => {
   const mediaType = data?._media_type || item.media_type || 'movie';
 
   const goToWatch = () => {
-    // Eagerly kill the trailer iframe (if playing) so iOS Safari isn't
-    // stuck tearing down a YouTube player on the navigation path —
-    // same trick as the "Back to Home" fix.
+    // Guard against accidental double-taps while the route is loading.
+    if (navigating) return;
+    // 1) Immediately flip the button into "loading" state. The user sees
+    //    the spinner + "Loading…" within the same tick as their tap, so
+    //    even a 2-3s push (slow network, cold TMDB on watch page, etc.)
+    //    doesn't feel like a frozen UI. Setting state synchronously here
+    //    is what guarantees React paints the loading affordance BEFORE
+    //    the navigation work begins.
+    setNavigating(true);
+    // 2) Eagerly kill the trailer iframe (if playing) so iOS Safari isn't
+    //    stuck tearing down a YouTube player on the navigation path —
+    //    same trick as the "Back to Home" fix.
     if (playTrailer) {
       try {
         const ifr = document.querySelector('iframe[title$="trailer"]');
         if (ifr) ifr.src = 'about:blank';
       } catch (_) {}
     }
-    // Navigate FIRST so the route transition begins immediately. Closing
-    // the Radix dialog before push() means its 150ms close-animation tick
-    // overlaps the navigation's first paint on iOS Safari, adding 1-3s of
-    // perceived delay. Pushing first lets Next.js start swapping the tree
-    // and the dialog unmounts as part of that transition.
+    // 3) Navigate. We deliberately DO NOT call onOpenChange(false) here.
+    //    Why? If we close the modal, Radix's ~150ms close animation
+    //    completes long before the watch page actually paints on a slow
+    //    connection (could be 1-2 s), leaving the user staring at the
+    //    home page with no loading feedback. Letting the modal stay open
+    //    with the "Loading…" spinner visible keeps the affordance on
+    //    screen continuously until the route transition unmounts the
+    //    entire home tree (including this modal). The `useEffect` on
+    //    [open, item] resets `navigating` to false on the next open of
+    //    the modal, so re-entering details for another title is clean.
     router.push(`/watch/${mediaType}/${item.id}`);
-    onOpenChange(false);
   };
 
   return (
@@ -127,9 +149,21 @@ const DetailModal = ({ open, onOpenChange, item, onCardClick }) => {
             <div className="flex flex-wrap items-center gap-2 sm:gap-3">
               <Button
                 onClick={goToWatch}
-                className="basis-full sm:basis-auto bg-red-600 hover:bg-red-700 text-white font-bold h-11 px-6 shadow-lg shadow-red-600/30"
+                disabled={navigating}
+                aria-busy={navigating || undefined}
+                className="basis-full sm:basis-auto bg-red-600 hover:bg-red-700 disabled:opacity-95 disabled:cursor-wait text-white font-bold h-11 px-6 shadow-lg shadow-red-600/30"
               >
-                <Play className="w-5 h-5 mr-2 fill-white" /> Play Now
+                {navigating ? (
+                  <>
+                    <Loader2 className="w-5 h-5 mr-2 animate-spin" />
+                    Loading…
+                  </>
+                ) : (
+                  <>
+                    <Play className="w-5 h-5 mr-2 fill-white" />
+                    Play Now
+                  </>
+                )}
               </Button>
               {trailer && !playTrailer && (
                 <Button

@@ -1605,3 +1605,83 @@ agent_communication:
           4. Hero "Play" button → same speed improvement
           5. Continue Watching card → unchanged behaviour (separate path)
 
+
+
+  - task: "Phase 4 Hotfix — Visible loading feedback on Play Now / Hero Play"
+    implemented: true
+    working: "NA"
+    file: "/app/components/streamix/DetailModal.js, /app/components/streamix/Hero.js"
+    stuck_count: 0
+    priority: "medium"
+    needs_retesting: false
+    status_history:
+      - working: "NA"
+        agent: "main"
+        comment: |
+          IMPLEMENTED — awaiting user iPhone 16 validation.
+
+          PROBLEM:
+          Even with route prefetch + push-first-close-after, users on slow
+          connections (or first-tap-after-app-launch) still saw a 1-2 s
+          gap between tapping Play Now and the watch page rendering. The
+          modal's Radix close animation (~150ms) tore down the affordance
+          long before the page actually appeared, leaving the user with
+          NO feedback that their tap was acknowledged. Many would re-tap.
+
+          FIX — visible-feedback layer:
+
+          1) /app/components/streamix/DetailModal.js
+             • New state: `navigating` (boolean). Set synchronously on
+               Play Now tap.
+             • Button swaps to <Loader2 spinning /> + "Loading…" the same
+               tick as the tap (React paints state-change before async
+               navigation work). Button is `disabled` + `aria-busy` to
+               prevent double-taps.
+             • REMOVED the `onOpenChange(false)` call from goToWatch.
+               The modal now STAYS OPEN with the loading spinner visible
+               until the route transition naturally unmounts the entire
+               home tree. This is the key: previously the modal closed
+               after 150ms, leaving 1-2 s of feedback-less limbo before
+               the watch page painted. Now the spinner is visible the
+               ENTIRE time.
+             • The `navigating` flag is reset to false in the modal-open
+               effect (on next open), so re-entering details for another
+               title is clean.
+             • Verified end-to-end with a Playwright network-throttled
+               (50 KB/s + 800ms latency) test: "Loading…" button visible
+               at 80ms AND 500ms post-tap.
+
+          2) /app/components/streamix/Hero.js
+             • Same navigating-state + spinner pattern for the hero Play
+               button. Reset by the slide-change effect (carousel rotates
+               every 8 s) so a stale loading state from a previous slide
+               doesn't persist.
+
+          ACCESSIBILITY:
+          • aria-busy on the button while navigating tells screen readers
+            something is loading.
+          • disabled attribute prevents accidental double-fires.
+          • CSS uses `disabled:opacity-95 disabled:cursor-wait` so the
+            button keeps its full color (no greyed-out look) — important
+            because it's a SUCCESS path, not an error/disabled state.
+
+          DO-NOT-TOUCH boundaries respected:
+          • Phase 1 English-detection: untouched
+          • Phase 2 audio mapping: untouched
+          • Phase 3 Up-Next overlay: untouched
+          • Phase 4 Issues 1-3 + prefetch fixes from earlier: untouched
+            (this LAYERS ON TOP of those, it doesn't replace anything)
+          • Watch page logic, VideoPlayer, HlsVideo: untouched
+          • /api/stream/proxy, Comet manifest URL, iOS fullscreen: untouched
+
+          USER TESTING CHECKLIST (iPhone 16):
+          1. Home → tap a movie card → modal opens
+          2. Tap "Play Now" → button INSTANTLY shows spinner + "Loading…"
+             — the tap is unmistakably acknowledged
+          3. Modal stays visible with the spinner until the watch page
+             paints (no feedback gap on slow networks)
+          4. Try to tap "Play Now" a second time during loading → does
+             nothing (disabled). No double-navigation.
+          5. While loading, the X close button + Watch Trailer + My List
+             remain interactive (you can still back out)
+          6. Hero "Play" button: same behaviour
