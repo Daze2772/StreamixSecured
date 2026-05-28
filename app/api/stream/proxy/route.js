@@ -1,9 +1,10 @@
 import { NextResponse } from 'next/server';
+import { isPrivateIp } from '@/lib/security-utils';
 
 /**
  * Stream Proxy
  * ============
- * Real-Debrid (and Comet's /playback redirect) serves video files with:
+ * Premium backend CDN (and Comet's /playback redirect) serves video files with:
  *   Content-Type: application/force-download
  *   Content-Disposition: attachment; filename="..."
  *
@@ -16,13 +17,15 @@ import { NextResponse } from 'next/server';
  *      and the upstream status (200 for full body, 206 for range)
  *
  * The proxy follows the Comet /playback redirect itself so the browser only
- * ever sees one origin (us). This also keeps the long signed RD URL out of
+ * ever sees one origin (us). This also keeps the long signed backend URL out of
  * client-visible DOM.
  *
  * Usage:  /api/stream/proxy?url=<encoded-upstream-url>&ext=mp4
  *
  * Note: this is a streaming pass-through — we don't buffer the whole file.
  * Range requests are forwarded so the player can seek freely.
+ *
+ * SECURITY: SSRF protection prevents proxying to private IPs or localhost.
  */
 
 export const dynamic = 'force-dynamic';
@@ -82,6 +85,16 @@ async function handle(request) {
     upstream = new URL(target);
   } catch (_) {
     return NextResponse.json({ error: 'Invalid url parameter' }, { status: 400 });
+  }
+
+  // ── SECURITY: SSRF protection ────────────────────────────────────
+  // Block private IPs (RFC1918, loopback, link-local) to prevent
+  // attackers from using this proxy to scan internal network
+  if (isPrivateIp(upstream.hostname)) {
+    return NextResponse.json(
+      { error: 'Private IPs and localhost are not allowed' },
+      { status: 403 },
+    );
   }
 
   if (!isAllowedHost(upstream.hostname)) {

@@ -48,19 +48,66 @@
 // We don't want this endpoint to become an open proxy.
 
 import { NextResponse } from 'next/server';
-import { createSession, ensureFfmpeg, getCachedProbe } from '@/lib/hls-sessions';
+import { createSession, ensureFfmpeg, getCachedProbe, getActiveSessionCount } from '@/lib/hls-sessions';
+import { isRateLimited, getCount } from '@/lib/rate-limiter';
+import { getClientIp } from '@/lib/security-utils';
 
 const ALLOWED_SOURCE_PREFIXES = [
   'https://comet.elfhosted.com/playback/',
 ];
+
+// Security limits to prevent ffmpeg DoS
+const MAX_SESSIONS_PER_IP_PER_MINUTE = 5;
+const MAX_CONCURRENT_SESSIONS_PER_IP = 3;
+const MAX_GLOBAL_CONCURRENT_SESSIONS = 20;
 
 const isAllowedSource = (url) => {
   if (typeof url !== 'string') return false;
   return ALLOWED_SOURCE_PREFIXES.some((p) => url.startsWith(p));
 };
 
+// Track active sessions per IP
+const activeSessionsByIp = globalThis.__streamixActiveSessionsByIp || new Map();
+globalThis.__streamixActiveSessionsByIp = activeSessionsByIp;
+
 export async function POST(request) {
   try {
+    const clientIp = getClientIp(request);
+
+    // ── SECURITY: Rate limiting ────────────────────────────────────
+    // Per-IP rate limit: 5 sessions per minute
+    if (isRateLimited(clientIp, MAX_SESSIONS_PER_IP_PER_MINUTE, 60000)) {
+      return NextResponse.json(
+        { 
+          error: 'Rate limit exceeded. Please wait before creating more sessions.',
+          retryAfter: 60,
+        },
+        { status: 429 },
+      );
+    }
+
+    // Per-IP concurrent session limit: 3 active sessions
+    const ipSessions = activeSessionsByIp.get(clientIp) || new Set();
+    if (ipSessions.size >= MAX_CONCURRENT_SESSIONS_PER_IP) {
+      return NextResponse.json(
+        { 
+          error: `Too many active sessions. Maximum ${MAX_CONCURRENT_SESSIONS_PER_IP} concurrent streams per user.`,
+        },
+        { status: 429 },
+      );
+    }
+
+    // Global concurrent session limit: 20 active sessions
+    const globalCount = getActiveSessionCount();
+    if (globalCount >= MAX_GLOBAL_CONCURRENT_SESSIONS) {
+      return NextResponse.json(
+        { 
+          error: 'Service at capacity. Please try again in a few moments.',
+        },
+        { status: 503 },
+      );
+    }
+
     const body = await request.json().catch(() => ({}));
     const { sourceUrl, filename, sizeBytes, quality, start, audioIndex } = body || {};
 
@@ -91,6 +138,24 @@ export async function POST(request) {
       startOffset,
       normalizedAudioIndex,
     );
+
+    // Track this session for the IP
+    if (!activeSessionsByIp.has(clientIp)) {
+      activeSessionsByIp.set(clientIp, new Set());
+    }
+    activeSessionsByIp.get(clientIp).add(session.id);
+
+    // Auto-cleanup: remove from tracking when session ends
+    // (The session manager will handle actual cleanup)
+    setTimeout(() => {
+      const ipSet = activeSessionsByIp.get(clientIp);
+      if (ipSet) {
+        ipSet.delete(session.id);
+        if (ipSet.size === 0) {
+          activeSessionsByIp.delete(clientIp);
+        }
+      }
+    }, 10 * 60 * 1000); // 10 minutes max session lifetime for tracking
 
     // ── FAST PATH: probe cache hit ────────────────────────────────
     // If we've probed this sourceUrl before (typical for audio/quality

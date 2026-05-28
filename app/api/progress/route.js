@@ -19,6 +19,8 @@ async function getDb() {
  *   clientId, mediaType, tmdbId, season?, episode?,
  *   position, duration, title, episodeTitle?, posterPath, backdropPath
  * }
+ * 
+ * SECURITY: Caps progress entries at 100 per clientId to prevent unbounded DB growth
  */
 export async function POST(request) {
   try {
@@ -39,6 +41,12 @@ export async function POST(request) {
     await collection.createIndex(
       { clientId: 1, mediaType: 1, tmdbId: 1, season: 1, episode: 1 },
       { unique: true }
+    );
+
+    // TTL index: auto-delete entries older than 90 days
+    await collection.createIndex(
+      { updatedAt: 1 },
+      { expireAfterSeconds: 90 * 24 * 60 * 60 }
     );
 
     // Compute completed flag
@@ -73,6 +81,25 @@ export async function POST(request) {
       update,
       { upsert: true, returnDocument: 'after' }
     );
+
+    // ── SECURITY: Cap entries per clientId ────────────────────────────────
+    // Prevent unbounded growth: keep only 100 most recent entries per clientId
+    const MAX_ENTRIES_PER_CLIENT = 100;
+    const count = await collection.countDocuments({ clientId });
+    
+    if (count > MAX_ENTRIES_PER_CLIENT) {
+      // Find oldest entries to delete
+      const toDelete = await collection
+        .find({ clientId })
+        .sort({ updatedAt: 1 })
+        .limit(count - MAX_ENTRIES_PER_CLIENT)
+        .toArray();
+      
+      const idsToDelete = toDelete.map((doc) => doc._id);
+      if (idsToDelete.length > 0) {
+        await collection.deleteMany({ _id: { $in: idsToDelete } });
+      }
+    }
 
     return NextResponse.json({ success: true, item: result });
   } catch (error) {

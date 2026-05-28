@@ -1,5 +1,6 @@
 import './globals.css'
 import { Inter } from 'next/font/google'
+import { DevToolsDeterrent } from '@/components/streamix/DevToolsDeterrent'
 
 const inter = Inter({ subsets: ['latin'] })
 
@@ -51,6 +52,7 @@ export default function RootLayout({ children }) {
         `}} />
       </head>
       <body className={`${inter.className} bg-black text-white antialiased overflow-x-hidden`}>
+        <DevToolsDeterrent />
         {children}
       </body>
     </html>
