@@ -59,7 +59,7 @@ const ALLOWED_SOURCE_PREFIXES = [
 // Security limits to prevent ffmpeg DoS
 const MAX_SESSIONS_PER_IP_PER_MINUTE = 5;
 const MAX_CONCURRENT_SESSIONS_PER_IP = 3;
-const MAX_GLOBAL_CONCURRENT_SESSIONS = 20;
+const MAX_GLOBAL_CONCURRENT_SESSIONS = 50;
 
 const isAllowedSource = (url) => {
   if (typeof url !== 'string') return false;
