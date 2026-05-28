@@ -1981,3 +1981,343 @@ agent_communication:
       
       PRODUCTION READY: All security hardening is working as designed.
       No issues found. Functionality preserved with security added.
+
+
+# ============================================================
+# FRONTEND TESTING ROUND - Rebranding & Security UI Verification
+# ============================================================
+
+frontend:
+  - task: "Server name rebranding (RD/AD/VidLink → anonymous labels)"
+    implemented: true
+    working: false
+    file: "/app/lib/streaming.js, /app/app/api/realdebrid/resolve/route.js"
+    stuck_count: 1
+    priority: "high"
+    needs_retesting: false
+    status_history:
+      - working: "NA"
+        agent: "main"
+        comment: |
+          Renamed servers to generic labels:
+            "RD Premium"  → "Premium 1"
+            "AD Premium"  → "Premium 2"
+            "VidLink"     → "Public Server 1"
+            "VidSrc"      → "Public Server 2"
+            (public servers 3-5 also renamed)
+          INTERNAL ids unchanged (localStorage compat preserved).
+          NEEDS UI VERIFICATION: Open the watch page server selector
+          and confirm:
+            1. No "Real-Debrid", "RD", "AllDebrid", "AD", "VidLink",
+               or "VidSrc" strings appear anywhere in user-visible text.
+            2. The 7 servers show with the new generic labels.
+            3. Tab/click between servers still switches sources.
+      - working: false
+        agent: "testing"
+        comment: |
+          ❌ PARTIAL FAILURE - Found "RD " string on movie watch page
+          
+          Server labels: ✅ ALL CORRECT (Premium 1, Premium 2, Public Server 1-5)
+          
+          ISSUE: Backend API returns quality strings with "[RD⚡]" prefix
+          • Location: /app/app/api/realdebrid/resolve/route.js
+          • Quality field contains: "[RD⚡] Comet 1080p"
+          • Displayed in VideoPlayer quality badge (line 1007)
+          • User sees: "Playing on Premium 1 · [RD⚡] Comet 1080p"
+          
+          FIX NEEDED: Strip "[RD⚡]" prefix from quality strings
+          • Recommended: Backend fix in resolve/route.js
+          • Alternative: Frontend fix in VideoPlayer.js
+          
+          Home page: ✅ CLEAN
+          TV watch page: ✅ CLEAN
+          Movie watch page: ❌ Shows "[RD⚡]" in quality badge
+
+  - task: "CTA copy update (Switch to Premium For Free)"
+    implemented: true
+    working: true
+    file: "/app/components/streamix/VideoPlayer.js"
+    stuck_count: 0
+    priority: "high"
+    needs_retesting: false
+    status_history:
+      - working: "NA"
+        agent: "main"
+        comment: |
+          Advisory CTA on Public Server playback now reads
+          "Switch to Premium For Free" (was "Switch to Real-Debrid").
+          NEEDS UI VERIFICATION: While on a Public Server tab, confirm
+          the inline advisory + button text uses the new copy and that
+          clicking it switches to Premium 1.
+      - working: true
+        agent: "testing"
+        comment: |
+          ✅ VERIFIED - CTA button text and functionality working correctly
+          • Button text: "Switch to Premium For Free" ✅
+          • Click behavior: Successfully switches to Premium 1 ✅
+          • Advisory appears on Public Server tabs ✅
+
+  - task: "DevTools deterrent component"
+    implemented: true
+    working: true
+    file: "/app/components/streamix/DevToolsDeterrent.js, /app/app/layout.js"
+    stuck_count: 0
+    priority: "medium"
+    needs_retesting: false
+    status_history:
+      - working: "NA"
+        agent: "main"
+        comment: |
+          Production-only mild deterrent based on window-size delta.
+          Fail-open: shows a dismissable warning with "Continue Anyway".
+          NEEDS UI VERIFICATION (best-effort — easily defeated by design):
+            1. In dev mode the deterrent should be INERT (no modal).
+            2. Component should not throw / crash any page.
+            3. Layout still renders normally on home + watch pages.
+      - working: true
+        agent: "testing"
+        comment: |
+          ✅ VERIFIED - Component not causing issues
+          • No crashes or errors detected
+          • Layout renders normally on all pages
+          • Home page: ✅ Working
+          • Watch pages: ✅ Working
+          • No console errors related to DevToolsDeterrent
+          
+          NOTE: Cannot test production behavior in dev environment
+          • Component is production-only (process.env.NODE_ENV check)
+          • Dev mode: Component is INERT as expected
+          • User must verify deterrent modal on production build
+
+  - task: "TMDB proxy on the client (NEXT_PUBLIC_TMDB_API_KEY removal verification)"
+    implemented: true
+    working: false
+    file: "/app/app/api/tmdb/[...path]/route.js, /app/lib/tmdb.js"
+    stuck_count: 1
+    priority: "high"
+    needs_retesting: false
+    status_history:
+      - working: "NA"
+        agent: "main"
+        comment: |
+          New `/api/tmdb/*` proxy hides the TMDB key from the client
+          (5-min cache, 60 req/min/IP rate limit, X-Cache header).
+          NEEDS UI VERIFICATION:
+            1. Home page + Search + Detail pages still load posters,
+               metadata, cast, similar titles, etc.
+            2. No raw `api.themoviedb.org` requests from the browser
+               (Network tab) carrying the API key — all TMDB calls
+               should go through `/api/tmdb/...`.
+            3. Browsing the same title twice should produce an
+               X-Cache: HIT on the second hit (visible in DevTools).
+      - working: false
+        agent: "testing"
+        comment: |
+          ❌ COMPLETE FAILURE - Client library NOT using proxy
+          
+          ISSUE: /app/lib/tmdb.js making direct calls to api.themoviedb.org
+          • Found 8+ direct TMDB API calls during testing
+          • NO calls through /api/tmdb/ proxy detected
+          • API key exposed in browser network tab
+          
+          ROOT CAUSE: Client library not updated
+          • Line 7: const BASE_URL = 'https://api.themoviedb.org/3';
+          • Should be: const BASE_URL = '/api/tmdb';
+          • Line 6: API key still in client code
+          
+          FIX REQUIRED:
+          1. Change BASE_URL in /app/lib/tmdb.js from 'https://api.themoviedb.org/3' to '/api/tmdb'
+          2. Remove NEXT_PUBLIC_TMDB_API_KEY from client (line 6)
+          3. Remove api_key param from axios config (line 15)
+          
+          PROXY STATUS: ✅ Backend proxy exists and works correctly
+          • /app/app/api/tmdb/[...path]/route.js is functional
+          • X-Cache headers implemented
+          • Rate limiting active
+          • Just needs client to use it
+          
+          UI STATUS: ✅ All content loads correctly
+          • Home page rails populated
+          • Posters and metadata display
+          • Search works
+          • Detail pages load
+          • Using direct TMDB calls (not proxy)
+
+  - task: "Continue Watching / Progress flow still works after MongoDB cap"
+    implemented: true
+    working: "NA"
+    file: "/app/app/api/progress/route.js"
+    stuck_count: 0
+    priority: "medium"
+    needs_retesting: false
+    status_history:
+      - working: "NA"
+        agent: "main"
+        comment: |
+          Progress API now caps to 100 most-recent entries per clientId
+          + 90-day TTL. Backend already verified (17/17).
+          NEEDS UI VERIFICATION:
+            1. Play a title for >30s, leave the page, return home —
+               the title shows under "Continue Watching".
+            2. Hit the X / remove control — the title disappears
+               from the rail without page reload.
+            3. Resume button on a stored title resumes near the
+               previous timestamp.
+      - working: "NA"
+        agent: "testing"
+        comment: |
+          ⚠️ NOT TESTED - Requires actual video playback
+          
+          REASON: Playwright Chromium lacks H.264 codec
+          • Cannot test real video playback in automated browser
+          • Backend API already verified (17/17 tests passed)
+          • User must verify on real device (iPhone 16)
+          
+          BACKEND STATUS: ✅ Fully verified in previous round
+          • POST /api/progress: Working (upsert with 100-entry cap)
+          • GET /api/progress: Working (list with filters)
+          • DELETE /api/progress: Working (remove entries)
+          • MongoDB integration: Working
+          
+          UI INTEGRATION: Cannot verify without real playback
+          • Continue Watching rail renders on home page
+          • Remove button present on cards
+          • Resume parameter in URL structure correct
+          • Actual playback + progress saving needs real browser
+
+metadata:
+  created_by: "main_agent"
+  version: "1.4"
+  test_sequence: 6
+  run_ui: true
+
+test_plan:
+  current_focus:
+    - "Server name rebranding (RD/AD/VidLink → anonymous labels)"
+    - "CTA copy update (Switch to Premium For Free)"
+    - "DevTools deterrent component"
+    - "TMDB proxy on the client (NEXT_PUBLIC_TMDB_API_KEY removal verification)"
+    - "Continue Watching / Progress flow still works after MongoDB cap"
+  stuck_tasks: []
+  test_all: false
+  test_priority: "high_first"
+
+agent_communication:
+  - agent: "main"
+    message: |
+      FRONTEND TESTING ROUND requested by user.
+
+      Backend is already fully verified (17/17 security tests passed in
+      prior round — see lines 1934-1983). Do NOT retest backend.
+
+      Goal of this round: confirm that the rebranding scrub and the
+      security additions did not break the user-facing UI.
+
+      Specifically verify, on the live preview (process.env.NEXT_PUBLIC_BASE_URL):
+
+      1. REBRANDING SCRUB (HIGH PRIORITY)
+         - Browse the home/discover/search pages and a Movie + a TV
+           watch page. Use the in-page text search for the following
+           forbidden strings and CONFIRM ZERO MATCHES anywhere visible:
+             "Real-Debrid", "Real Debrid", "RealDebrid", "RD ", "/RD",
+             "AllDebrid", "AD Premium", "VidLink", "VidSrc"
+           Important nuance: the watch page "Servers" selector should
+           show "Premium 1", "Premium 2", "Public Server 1..5".
+         - INTERNAL ids in localStorage are intentionally unchanged
+           and are FINE — only user-visible text matters.
+
+      2. ADVISORY CTA COPY
+         - On a Public Server tab, the inline notice + button must say
+           "Switch to Premium For Free" (NOT "Switch to Real-Debrid").
+           Clicking it should switch the active server to Premium 1.
+
+      3. TMDB IS NOW SERVER-PROXIED
+         - In DevTools Network tab, browse home + a title page and
+           confirm there are NO direct `api.themoviedb.org` requests
+           from the browser. All TMDB traffic must go through
+           `/api/tmdb/...`. Confirm posters / metadata / cast load.
+         - Refresh the same title page twice and confirm `X-Cache: HIT`
+           is present on `/api/tmdb/...` responses the second time.
+
+      4. CONTINUE WATCHING (post MongoDB cap)
+         - Start playback >30s on any title, leave, return home —
+           the title appears under "Continue Watching".
+         - Removing it via the X removes it without reload.
+         - Resume button resumes near the saved timestamp.
+
+      5. NO REGRESSIONS
+         - Home page loads (movies + TV rails populated from TMDB proxy).
+         - Search works and returns results.
+         - Title detail page opens and shows trailer + cast + episodes.
+         - Player can start a stream on at least one Public Server
+           (Premium will require a valid RD link in the environment;
+           if Premium fails because no torrent matched, that is OK and
+           NOT a regression — just confirm the UI handles it gracefully
+           and falls through to a Public Server).
+
+      Hard boundaries — DO NOT touch / re-test:
+         - Phase 1 English-audio detection logic
+         - Phase 2 audio mapping
+         - The Comet manifest URL
+         - The Up-Next overlay
+         - Any backend security route (already verified)
+
+      Test on the public preview URL only. Use the
+      NEXT_PUBLIC_BASE_URL value from /app/.env as the entry point.
+  - agent: "testing"
+    message: |
+      ✅ FRONTEND TESTING COMPLETE - 2 CRITICAL ISSUES FOUND
+      
+      Executed comprehensive UI testing across home, search, movie watch, and TV watch pages.
+      
+      ISSUE 1: REBRANDING SCRUB - PARTIAL FAILURE ❌
+      • Home page: ✅ CLEAN (no forbidden strings)
+      • TV watch page: ✅ CLEAN (no forbidden strings)
+      • Movie watch page: ❌ FOUND "RD " string
+      
+      ROOT CAUSE: Backend API response contains "[RD⚡]" in quality field
+      • Location: /app/app/api/realdebrid/resolve/route.js
+      • The quality field returns strings like "[RD⚡] Comet 1080p"
+      • This is displayed in VideoPlayer quality badge (line 1007)
+      • Example: "Playing on Premium 1 · [RD⚡] Comet 1080p"
+      
+      FIX REQUIRED: Strip "[RD⚡]" prefix from quality strings before returning to frontend
+      • Option 1: Modify backend to remove "[RD⚡]" from quality field
+      • Option 2: Modify frontend VideoPlayer to strip "[RD⚡]" before display
+      • Recommended: Backend fix (cleaner separation of concerns)
+      
+      ISSUE 2: TMDB PROXY - COMPLETE FAILURE ❌
+      • Client library making DIRECT calls to api.themoviedb.org
+      • Found 8+ direct TMDB API calls during testing
+      • NO calls through /api/tmdb/ proxy detected
+      
+      ROOT CAUSE: /app/lib/tmdb.js not updated to use proxy
+      • Line 7: const BASE_URL = 'https://api.themoviedb.org/3';
+      • Should be: const BASE_URL = '/api/tmdb';
+      • The proxy exists and works, but client isn't using it
+      
+      FIX REQUIRED: Update TMDB client library to use proxy
+      • Change BASE_URL from 'https://api.themoviedb.org/3' to '/api/tmdb'
+      • Remove API key from client-side (line 6)
+      • This will route all TMDB calls through the server proxy
+      
+      SUCCESSES ✅:
+      • Server labels: All 7 correct (Premium 1, Premium 2, Public Server 1-5)
+      • CTA button: "Switch to Premium For Free" ✅
+      • CTA click: Successfully switches to Premium 1 ✅
+      • Home page: Loads correctly with trending content ✅
+      • Movie watch page: Loads correctly with player ✅
+      • TV watch page: Loads correctly with episode selector ✅
+      • No console errors detected ✅
+      • No regressions in basic functionality ✅
+      
+      CONTINUE WATCHING: Not tested (requires actual video playback)
+      • Backend API already verified (17/17 tests passed)
+      • Playwright Chromium lacks H.264 codec for real playback test
+      • User must verify on real device
+      
+      EVIDENCE:
+      • Screenshots captured: 01_home_page.png, 03_movie_watch_page.png, 
+        04_public_server_cta.png, 05_tv_watch_page.png
+      • Network logs show 8+ direct api.themoviedb.org calls
+      • Quality badge shows "[RD⚡]" prefix on movie watch page
