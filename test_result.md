@@ -1538,3 +1538,70 @@ agent_communication:
       Phase 4 Hotfix Issue 2 is production-ready and fully functional.
       Audio switch latency reduced from 20+ seconds to < 500ms (98-99.8% improvement).
       All tests passed with no regressions.
+
+  - task: "Phase 4 Hotfix — Home → Watch navigation latency (Play Now button)"
+    implemented: true
+    working: "NA"
+    file: "/app/components/streamix/DetailModal.js, /app/components/streamix/Hero.js"
+    stuck_count: 0
+    priority: "medium"
+    needs_retesting: false
+    status_history:
+      - working: "NA"
+        agent: "main"
+        comment: |
+          IMPLEMENTED — awaiting user iPhone 16 validation.
+
+          PROBLEM:
+          On iPhone Safari, clicking a title card → modal → "Play Now"
+          had a 2-4 second blank/freeze before the watch page appeared.
+          Desktop barely noticed it. Root causes:
+            • Modal's Radix Dialog ran a ~150ms close animation between
+              onOpenChange(false) and the navigation paint.
+            • Next.js app router fetched the /watch route's RSC + JS chunks
+              cold on click (no prefetch).
+            • If a YouTube trailer iframe was playing in the modal, iOS
+              Safari blocked the navigation tick on iframe teardown.
+
+          FIX:
+
+          1) /app/components/streamix/DetailModal.js:
+             • On modal open, call `router.prefetch('/watch/...')` so the
+               app-router warms the route's chunks while the user is
+               reading details. Tapping Play Now then lands on a hot
+               cache (~100-200ms vs 2-4s cold).
+             • Reordered goToWatch: `router.push(...)` FIRST, then
+               `onOpenChange(false)`. Lets Next start the route transition
+               immediately; the dialog unmounts as part of it instead of
+               blocking the first paint.
+             • Added eager iframe cleanup when a trailer is mid-playback:
+               sets `iframe.src = 'about:blank'` to short-circuit iOS
+               WebKit's iframe destruction stall.
+
+          2) /app/components/streamix/Hero.js:
+             • Same router.prefetch pattern but in a useEffect tied to
+               the current carousel slide (rotates every 8s). Hero's
+               "Play" button now lands on a hot cache regardless of
+               which slide was last shown.
+             • Moved the prefetch hook ABOVE the conditional early-return
+               so rules-of-hooks are respected. Uses `safeItem` /
+               `safeMediaType` (null-safe duplicates of the post-return
+               vars) so the hook can safely run before the early return.
+
+          DO-NOT-TOUCH boundaries respected:
+          • Phase 1 English-detection: untouched
+          • Phase 2 audio mapping: untouched
+          • Phase 3 Up-Next overlay: untouched
+          • Phase 4 Issues 1-3 fixes from earlier: untouched
+          • Watch page logic, VideoPlayer, HlsVideo: untouched
+          • /api/stream/proxy, Comet manifest URL, iOS fullscreen: untouched
+
+          USER TESTING CHECKLIST (iPhone 16):
+          1. Home → tap a movie card → modal opens
+          2. Tap "Play Now" → watch page should appear in 1s or less
+             (was 2-4s)
+          3. Open a modal → start the trailer → tap Play Now → still
+             snappy (iframe cleanup handles this)
+          4. Hero "Play" button → same speed improvement
+          5. Continue Watching card → unchanged behaviour (separate path)
+

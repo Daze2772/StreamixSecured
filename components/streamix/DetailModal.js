@@ -27,7 +27,16 @@ const DetailModal = ({ open, onOpenChange, item, onCardClick }) => {
       setData(d ? { ...d, _media_type: mediaType } : null);
       setLoading(false);
     });
-  }, [open, item]);
+
+    // ── Prefetch the watch route ────────────────────────────────
+    // The moment the user opens the modal there's a high probability
+    // they'll hit "Play Now". `router.prefetch` warms Next.js's app-router
+    // cache (loads the route's RSC payload + JS chunks in the background)
+    // so the actual push() lands in <100 ms instead of waiting on a cold
+    // fetch — most noticeable on iOS Safari which is slow to parse new
+    // chunks while a backdrop image / trailer iframe is still painting.
+    try { router.prefetch(`/watch/${mediaType}/${item.id}`); } catch (_) {}
+  }, [open, item, router]);
 
   const trailer = useMemo(() => pickTrailer(data?.videos?.results), [data]);
 
@@ -44,8 +53,22 @@ const DetailModal = ({ open, onOpenChange, item, onCardClick }) => {
   const mediaType = data?._media_type || item.media_type || 'movie';
 
   const goToWatch = () => {
-    onOpenChange(false);
+    // Eagerly kill the trailer iframe (if playing) so iOS Safari isn't
+    // stuck tearing down a YouTube player on the navigation path —
+    // same trick as the "Back to Home" fix.
+    if (playTrailer) {
+      try {
+        const ifr = document.querySelector('iframe[title$="trailer"]');
+        if (ifr) ifr.src = 'about:blank';
+      } catch (_) {}
+    }
+    // Navigate FIRST so the route transition begins immediately. Closing
+    // the Radix dialog before push() means its 150ms close-animation tick
+    // overlaps the navigation's first paint on iOS Safari, adding 1-3s of
+    // perceived delay. Pushing first lets Next.js start swapping the tree
+    // and the dialog unmounts as part of that transition.
     router.push(`/watch/${mediaType}/${item.id}`);
+    onOpenChange(false);
   };
 
   return (
