@@ -1685,3 +1685,94 @@ agent_communication:
           5. While loading, the X close button + Watch Trailer + My List
              remain interactive (you can still back out)
           6. Hero "Play" button: same behaviour
+
+  - task: "UX polish — loading text rewrite + public-server ads advisory"
+    implemented: true
+    working: "NA"
+    file: "/app/components/streamix/VideoPlayer.js"
+    stuck_count: 0
+    priority: "low"
+    needs_retesting: false
+    status_history:
+      - working: "NA"
+        agent: "main"
+        comment: |
+          IMPLEMENTED — verified visually with Playwright screenshot.
+
+          CHANGE 1 — Loading copy update:
+          Old: "Asking Real-Debrid for the cleanest mirror… usually takes 2–5 seconds."
+          New: "Searching for the cleanest mirror… usually takes 2–5 seconds, depending on your internet speed."
+
+          Why: removes the brand-specific ("Real-Debrid") language so it
+          reads more naturally to non-technical viewers, and adds the
+          honest caveat about network speed so a 10s wait on a slow
+          connection doesn't feel like a bug.
+
+          CHANGE 2 — Public-server ads advisory:
+          Whenever the active server is a 3rd-party iframe provider
+          (i.e. NOT premium, NOT the demo direct-MP4 server), a
+          dismissible advisory card now renders between the toast row
+          and the action bar. It contains:
+            • Amber-gradient card matching the Premium server visual
+              language (so users associate the colour with "premium")
+            • Crown icon + "Heads up — {ProviderName} is a third-party
+              server" header (dynamic — pulls activeServer.name)
+            • Disclosure: "Any ads or pop-ups you see come from the
+              provider — we don't control them. For an almost ad-free
+              experience, try our Premium server — it's free."
+            • Prominent "Switch to Premium" CTA (amber gradient button
+              with Crown icon) → calls selectServer(firstPremiumIdx)
+              then dismisses the advisory
+            • Secondary "Not now" text button
+            • Close X icon (top-right)
+
+          Dismissal behaviour:
+          • Persisted in sessionStorage under 'streamix:embedAdvisoryDismissed'
+          • Stays dismissed for the rest of the TAB session (so it
+            doesn't nag on every title change / Back to Home cycle)
+          • Re-appears on a fresh tab (so first-time users on each visit
+            always get the reminder that Premium exists & is free)
+
+          Gracefully hides when:
+          • Active server is premium or direct
+          • No premium server exists in the catalogue
+            (firstPremiumIdx < 0)
+          • Trailer is showing (overlay context)
+          • User has already dismissed this session
+
+          ACCESSIBILITY:
+          • X button has aria-label="Dismiss advisory"
+          • Click target sizes meet 44×44 minimum on mobile
+
+          DO-NOT-TOUCH boundaries respected:
+          • Phase 1 English-detection: untouched
+          • Phase 2 audio mapping: untouched
+          • Phase 3 Up-Next overlay: untouched
+          • Phase 4 prior fixes (Issues 1-3, Play-Now feedback): untouched
+          • HlsVideo, /api/stream/proxy, Comet manifest, iOS fullscreen,
+            hls.js init: untouched
+          • Streaming servers catalogue (/app/lib/streaming.js): untouched
+
+          VERIFIED:
+          • Lint clean
+          • Playwright screenshot at /tmp/advisory.png shows the card
+            with "Heads up — VidSrc is a third-party server" + the
+            Switch to Premium CTA correctly rendered when VidSrc is
+            selected (Fight Club test page)
+          • Loading text screenshot at /tmp/loading_text.png
+
+          USER TESTING CHECKLIST (iPhone 16):
+          1. Open any title → start playback on Premium → click any
+             non-premium server (VidLink / VidSrc / Embed.su etc.)
+          2. Confirm the amber "Heads up" advisory card appears below
+             the player
+          3. Tap "Switch to Premium" → switches back to RD Premium
+             instantly + advisory disappears for the session
+          4. Open another title in the same session → advisory should
+             NOT reappear (still dismissed)
+          5. Close the tab → reopen the site → advisory reappears (per
+             sessionStorage scope)
+          6. Switch to Premium → start playback → confirm new copy:
+             "Searching for the cleanest mirror… usually takes 2–5
+             seconds, depending on your internet speed."
+

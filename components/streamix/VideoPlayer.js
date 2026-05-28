@@ -7,7 +7,7 @@ import HlsVideo from '@/components/streamix/HlsVideo';
 import {
   Server, AlertCircle, RotateCw, Loader2,
   CheckCircle2, XCircle, Circle, Youtube, ChevronRight, Play, Shield, ShieldOff,
-  Crown, Sparkles,
+  Crown, Sparkles, X,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 
@@ -88,6 +88,12 @@ const VideoPlayer = ({
     [mediaType, tmdbId],
   );
   const blockerKey = 'streamix:popupBlocker';
+  // Session-persisted dismissal of the "public server has external ads"
+  // advisory. We DELIBERATELY use sessionStorage (not localStorage) so the
+  // notice reappears on a fresh visit — first-time users on each session
+  // are always reminded that Premium is available for free, but returning
+  // visitors within the same tab won't be nagged.
+  const embedAdvisoryKey = 'streamix:embedAdvisoryDismissed';
 
   const initialIdx = (() => {
     if (typeof window === 'undefined') return 0;
@@ -108,6 +114,16 @@ const VideoPlayer = ({
   const [toast, setToast] = useState(null);
   const [playerActive, setPlayerActive] = useState(false);
   const [popupBlock, setPopupBlock] = useState(initialBlock);
+  // Whether the embed-ads advisory should appear when an embed server is
+  // active. Defaults to true; flipped to false (for the rest of the tab
+  // session) when the user clicks Dismiss on the advisory card. Reads
+  // sessionStorage on mount so dismissal survives in-tab navigation
+  // (e.g. Back to Home and re-opening a title) but resets on a fresh tab.
+  const initialEmbedAdvisoryOpen = (() => {
+    if (typeof window === 'undefined') return true;
+    try { return window.sessionStorage.getItem(embedAdvisoryKey) !== '1'; } catch (_) { return true; }
+  })();
+  const [embedAdvisoryOpen, setEmbedAdvisoryOpen] = useState(initialEmbedAdvisoryOpen);
 
   // Premium (Real-Debrid) resolution state
   // Shape: { state: 'idle'|'loading'|'ok'|'error', url, quality, title, error,
@@ -552,6 +568,28 @@ const VideoPlayer = ({
   // ────────────────────────────────────────────────────────────
   const isPremiumActive = activeServer.isPremium;
   const showPopupToggle = !activeServer.isDirect && !activeServer.isPremium;
+  // Index of the first premium server in the catalogue — used as the
+  // target for the "Switch to Premium" CTA inside the embed-ads advisory.
+  // If no premium server is configured the advisory CTA is hidden.
+  const firstPremiumIdx = useMemo(
+    () => STREAMING_SERVERS.findIndex((s) => s.isPremium),
+    [],
+  );
+  // True when the embed-ads advisory should actually render: the active
+  // server is a third-party iframe provider (not premium, not the demo
+  // direct-MP4 server), AND there's at least one premium server we can
+  // route the user to, AND they haven't dismissed it this session.
+  const showEmbedAdvisory =
+    embedAdvisoryOpen
+    && !activeServer.isPremium
+    && !activeServer.isDirect
+    && firstPremiumIdx >= 0
+    && !showTrailer;
+
+  const dismissEmbedAdvisory = () => {
+    setEmbedAdvisoryOpen(false);
+    try { window.sessionStorage.setItem(embedAdvisoryKey, '1'); } catch (_) {}
+  };
 
   return (
     <div className="w-full">
@@ -830,7 +868,7 @@ const VideoPlayer = ({
                       Unlocking Premium stream
                     </p>
                     <p className="text-xs text-neutral-400 mt-1.5 max-w-sm">
-                      Asking Real-Debrid for the cleanest mirror… usually takes 2–5 seconds.
+                      Searching for the cleanest mirror… usually takes 2–5 seconds, depending on your internet speed.
                     </p>
                   </div>
                 </div>
@@ -901,6 +939,52 @@ const VideoPlayer = ({
                 </Button>
                 <button onClick={() => setToast(null)} className="text-xs opacity-70 hover:opacity-100">Dismiss</button>
               </div>
+            </div>
+          )}
+
+          {/* Embed-server advisory — only shown when on a 3rd-party iframe
+              provider. Reminds the user that ads come from the provider
+              (we don't control them) and offers a one-tap switch to the
+              free Premium tier. Dismissible per-session. */}
+          {showEmbedAdvisory && (
+            <div className="mt-3 mx-2 md:mx-0 rounded-lg border border-amber-500/30 bg-gradient-to-br from-amber-950/50 to-yellow-950/30 px-4 py-3 flex items-start gap-3">
+              <div className="mt-0.5 h-8 w-8 rounded-full bg-amber-500/20 grid place-items-center flex-none">
+                <Crown className="w-4 h-4 text-amber-300" />
+              </div>
+              <div className="flex-1 min-w-0">
+                <p className="text-sm font-semibold text-amber-100">
+                  Heads up — <span className="text-amber-300">{activeServer.name}</span> is a third-party server
+                </p>
+                <p className="text-xs text-neutral-300 mt-1 leading-relaxed">
+                  Any ads or pop-ups you see come from the provider — we don't control them. For an almost ad-free experience, try our <b className="text-amber-200">Premium</b> server — it's <b className="text-amber-200">free</b>.
+                </p>
+                <div className="mt-2.5 flex flex-wrap items-center gap-2">
+                  <Button
+                    size="sm"
+                    onClick={() => {
+                      selectServer(firstPremiumIdx);
+                      dismissEmbedAdvisory();
+                    }}
+                    className="bg-gradient-to-br from-amber-500 to-yellow-600 hover:from-amber-400 hover:to-yellow-500 text-white font-semibold h-8 px-3 shadow shadow-amber-500/20"
+                  >
+                    <Crown className="w-3.5 h-3.5 mr-1.5" />
+                    Switch to Premium
+                  </Button>
+                  <button
+                    onClick={dismissEmbedAdvisory}
+                    className="text-xs text-neutral-400 hover:text-neutral-200 px-2 py-1"
+                  >
+                    Not now
+                  </button>
+                </div>
+              </div>
+              <button
+                onClick={dismissEmbedAdvisory}
+                aria-label="Dismiss advisory"
+                className="flex-none text-neutral-500 hover:text-neutral-200 transition"
+              >
+                <X className="w-4 h-4" />
+              </button>
             </div>
           )}
 
