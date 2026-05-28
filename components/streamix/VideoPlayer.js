@@ -16,10 +16,9 @@ import { Button } from '@/components/ui/button';
  *
  * Servers come in three flavours:
  *
- *  1. PREMIUM (Real-Debrid)  — server.isPremium === true
- *       Resolved server-side via /api/realdebrid/resolve. Returns a direct
+ *  1. PREMIUM — server.isPremium === true
+ *       Resolved server-side via our debrid backend. Returns a direct
  *       HTTPS stream URL we play in a native <video>. Almost ad-free.
- *       Configured via RD_ADDON_MANIFEST_URL (see .env).
  *
  *  2. EMBED (iframe providers) — server.movie / server.tv resolvers
  *       Wrapped in our /embed proxy with a strict outer-iframe sandbox.
@@ -125,13 +124,13 @@ const VideoPlayer = ({
   })();
   const [embedAdvisoryOpen, setEmbedAdvisoryOpen] = useState(initialEmbedAdvisoryOpen);
 
-  // Premium (Real-Debrid) resolution state
+  // Premium resolution state
   // Shape: { state: 'idle'|'loading'|'ok'|'error', url, quality, title, error,
   //          alternates, altIndex, qualities, sessionStartOffset, sourceDuration }
   // - `qualities` is the per-resolution picker list from the resolver
   //   (≤4 entries, sorted hi→lo). Passed straight to HlsVideo as
   //   `qualityOptions`. Empty array when the resolver couldn't probe any
-  //   candidates, or for the AllDebrid client-side path (which doesn't
+  //   candidates, or for the premium client-side path (which doesn't
   //   return a quality menu).
   // - `sourceDuration` (float seconds) is the FULL video duration from
   //   ffprobe (probed once at session creation). The frontend uses it as
@@ -144,7 +143,7 @@ const VideoPlayer = ({
   //   channels:6}, ...]). Empty array if probe failed or single-audio.
   // - `currentAudioIndex` (Phase 2) is the actively-playing audio track
   //   index (0-based). Updated on audio switches.
-  // - `currentSourceUrl` (Phase 4 hotfix) is the Real-Debrid / Comet
+  // - `currentSourceUrl` (Phase 4 hotfix) is the premium backend
   //   playback URL backing the CURRENTLY PLAYING HLS session. Persists
   //   across audio switches (audio swap re-spawns the session for the
   //   same source) and updates on quality / alternate swap. Used by
@@ -258,7 +257,7 @@ const VideoPlayer = ({
   }, [serverIdx, iframeKey, season, episode, playerActive, showTrailer]);
 
   // ────────────────────────────────────────────────────────────
-  // PREMIUM (Real-Debrid) resolver
+  // PREMIUM resolver
   // ────────────────────────────────────────────────────────────
   useEffect(() => {
     if (!activeServer.isPremium) {
@@ -331,7 +330,7 @@ const VideoPlayer = ({
           setPremium({ state: 'error', url: null, quality: null, title: null, error: err.message, alternates: [], altIndex: 0, qualities: [], sessionStartOffset: 0, sourceDuration: null, audioStreams: [], currentAudioIndex: null, currentSourceUrl: null });
           updateStatus(serverIdx, STATUS.FAILED);
           triedAutoSwitchRef.current.add(serverIdx);
-          setToast({ kind: 'error', msg: `AllDebrid: ${err.message}` });
+          setToast({ kind: 'error', msg: `Premium 2: ${err.message}` });
           setTimeout(() => tryNextServer(), 1500);
         });
 
@@ -659,7 +658,7 @@ const VideoPlayer = ({
               />
             )}
 
-            {/* PREMIUM (Real-Debrid → HLS via ffmpeg) — codec-universal.
+            {/* PREMIUM (HLS via ffmpeg) — codec-universal.
                 Note: `${premium.url}` deliberately NOT in the key so that
                 in-place src swaps (quality picker, fatal-fallback alternate
                 rotation) DON'T remount HlsVideo. The hls.js effect inside
@@ -968,7 +967,7 @@ const VideoPlayer = ({
                     className="bg-gradient-to-br from-amber-500 to-yellow-600 hover:from-amber-400 hover:to-yellow-500 text-white font-semibold h-8 px-3 shadow shadow-amber-500/20"
                   >
                     <Crown className="w-3.5 h-3.5 mr-1.5" />
-                    Switch to Premium
+                    Switch to Premium For Free
                   </Button>
                   <button
                     onClick={dismissEmbedAdvisory}
@@ -1070,7 +1069,7 @@ const VideoPlayer = ({
             <Server className="w-4 h-4" />
             <h3 className="text-sm font-semibold uppercase tracking-wider">Servers</h3>
             <span className="text-xs text-neutral-500 hidden md:inline">
-              Auto-switches if a server fails. The Premium tab uses Real-Debrid for nearly ad-free playback.
+              Auto-switches if a server fails. Premium servers provide nearly ad-free playback.
             </span>
           </div>
         </div>
@@ -1093,7 +1092,7 @@ const VideoPlayer = ({
                       ? 'bg-amber-950/40 border-amber-900/60 text-amber-200/70 hover:border-amber-700'
                       : 'bg-gradient-to-br from-amber-950/60 to-yellow-950/40 border-amber-500/40 hover:border-amber-400 text-amber-100 hover:shadow-md hover:shadow-amber-500/20'
                   }`}
-                  title="Real-Debrid powered — almost ad-free. Requires RD_ADDON_MANIFEST_URL set on the server."
+                  title="Premium server — almost ad-free. Powered by our debrid backend."
                 >
                   <Crown className={`w-4 h-4 flex-none ${isActive ? 'text-white' : 'text-amber-400'}`} />
                   <span className="flex flex-col items-start leading-tight min-w-0 flex-1">
@@ -1158,8 +1157,8 @@ const VideoPlayer = ({
         {/* Premium info note */}
         <p className="mt-3 text-[11px] text-neutral-500 max-w-2xl leading-relaxed">
           <Crown className="w-3 h-3 inline mr-1 -mt-0.5 text-amber-400/70" />
-          <b className="text-amber-300/80">Premium (Real-Debrid)</b> streams direct from RD&apos;s servers — very low ads, no popups, faster start.
-          Requires a configured Real-Debrid manifest URL on the server. If a title isn&apos;t cached yet, the player falls back automatically.
+          <b className="text-amber-300/80">Premium</b> streams direct from our backend — very low ads, no popups, faster start.
+          If a title isn&apos;t cached yet, the player falls back automatically.
         </p>
       </section>
     </div>
