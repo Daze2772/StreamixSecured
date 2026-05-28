@@ -49,6 +49,23 @@ function parseResolution(filename) {
 // High → low display order. Anything outside this list is skipped from the picker.
 const RES_ORDER = ['2160p', '1080p', '720p', '480p', '360p'];
 
+// Scrub debrid badges from a quality label before sending to the client.
+// Comet returns things like "[RD⚡] Comet 1080p" or "[AD⚡] Comet 4K UHD";
+// we strip the bracketed prefix and the "Comet" provider tag so the user
+// only sees the actual quality descriptor (e.g. "1080p").
+function sanitizeQualityLabel(name) {
+  if (!name) return '';
+  return String(name)
+    // Strip leading bracketed debrid badges like "[RD⚡]", "[AD⚡]",
+    // "[RD]", "[ AD ⬇ ]", "[RD+]", etc. (case-insensitive, lightning/down arrows handled)
+    .replace(/\[\s*(?:RD|AD|PM|DL|TB|OC)\s*[⚡⬇️↓↑+]*\s*\]\s*/gi, '')
+    // Drop the "Comet" provider tag (with or without surrounding spaces/dashes)
+    .replace(/\bComet\b\s*[-–—]?\s*/gi, '')
+    // Tidy up double-spaces left behind
+    .replace(/\s{2,}/g, ' ')
+    .trim();
+}
+
 // Browser playback compatibility scorer.
 // Higher = more likely to play in a stock browser <video> tag.
 // `name` is Comet's badge (e.g. "[RD⚡] Comet 1080p" — ⚡ = cached/instant,
@@ -456,7 +473,7 @@ export async function GET(request) {
       streamUrl: hlsResult.streamUrl,
       streamType: 'hls',
       directUrl: chosen.url,                 // for debugging + quality-swap re-seeding
-      quality: chosen.name.slice(0, 100),
+      quality: sanitizeQualityLabel(chosen.name).slice(0, 100),
       filename: chosen.filename || chosen.name,
       sizeBytes: chosen.sizeBytes,
       probedOk: chosenIdx >= 0,
@@ -496,7 +513,7 @@ export async function GET(request) {
         streamType: 'hls',
         directUrl: s.url,
         filename: s.filename || s.name,
-        quality: s.name,
+        quality: sanitizeQualityLabel(s.name),
         sizeBytes: s.sizeBytes,
         sourceDuration: hlsResult.sourceDuration, // assume same source file
         audioStreams: hlsResult.audioStreams,     // assume same source file

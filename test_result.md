@@ -2321,3 +2321,55 @@ agent_communication:
         04_public_server_cta.png, 05_tv_watch_page.png
       • Network logs show 8+ direct api.themoviedb.org calls
       • Quality badge shows "[RD⚡]" prefix on movie watch page
+
+# ============================================================
+# FOLLOW-UP FIXES after frontend testing round
+# ============================================================
+
+agent_communication:
+  - agent: "testing"
+    message: |
+      Frontend test results from round 6:
+        ✅ CTA copy "Switch to Premium For Free" — correct
+        ✅ Server labels Premium 1/2 + Public Server 1-5 — correct
+        ✅ DevTools deterrent — no crashes
+        ✅ No regressions on home/search/detail pages
+        ❌ Quality badge on watch page still shows "[RD⚡]" prefix
+           (from /api/realdebrid/resolve `quality` field)
+        ❌ /lib/tmdb.js still calls api.themoviedb.org directly
+           (TMDB proxy at /api/tmdb/* was implemented but never wired in)
+
+  - agent: "main"
+    message: |
+      Fixed both issues:
+
+      1. /app/app/api/realdebrid/resolve/route.js
+         Added sanitizeQualityLabel() helper that strips:
+           - [RD⚡] / [AD⚡] / [RD] / [AD] / etc. bracketed debrid badges
+             (incl. lightning/down arrows, "+" suffix, spaces)
+           - the "Comet" provider tag
+         Applied to BOTH user-facing fields in the response payload:
+           - response.quality        (line 476)
+           - response.alternates[].quality  (line 516)
+         Unit tests pass:
+           "[RD⚡] Comet 1080p"  → "1080p"
+           "[AD⚡] Comet 4K UHD" → "4K UHD"
+           "[ RD ⬇ ] Comet 2160p" → "2160p"
+           "[RD+] Comet - 480p" → "480p"
+         Internal `createSession()` quality metadata is left as-is —
+         it's only stored in HLS session state, never sent to the client.
+
+      2. /app/lib/tmdb.js
+         Removed direct api.themoviedb.org calls + NEXT_PUBLIC_TMDB_API_KEY
+         reference. All client TMDB traffic now flows through the
+         /api/tmdb/[...path] proxy (server-side API key, 5-min LRU cache,
+         60 req/min/IP rate limit).
+         Verified:
+           - curl /api/tmdb/movie/popular?page=99 → 200, x-cache: MISS
+           - curl /api/tmdb/trending/all/day → 200, x-cache: HIT (cache works)
+           - Home page renders with hero + rating chips (TMDB data flowing)
+           - 0 direct api.themoviedb.org requests captured from browser
+
+      Both fixes are minimal, surgical, no other code paths touched.
+      Backend security (17/17) + Continue Watching + all hot paths untouched.
+
