@@ -9,7 +9,7 @@ async function getDb() {
   if (!cachedClient) {
     cachedClient = await MongoClient.connect(MONGO_URL);
   }
-  return cachedClient.db('streamix');
+  return cachedClient.db(process.env.DB_NAME || 'streamix');
 }
 
 /**
