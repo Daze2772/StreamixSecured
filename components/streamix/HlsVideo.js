@@ -120,6 +120,17 @@ export default function HlsVideo({
   audioStreams = [],
   currentAudioIndex = null,
   onAudioChange = null,
+  // ── Seek-by-restart (forward past buffer / backward before offset) ───
+  // When the user scrubs to a real-world time the current ffmpeg session
+  // can't reach (either before its `sessionStartOffset` or past what's
+  // been transcoded so far), we ask the parent to mint a fresh HLS
+  // session at that exact second. Same atomic-swap pattern as a quality
+  // switch — parent does POST /api/stream/hls/session and updates BOTH
+  // `src` AND `sessionStartOffset` props in one render.
+  //   onSeekBeyondBuffer(realWorldSeconds: number) => void
+  // The callback is debounced 350ms inside this component so dragging
+  // the scrubber fires only one restart at the drag's final position.
+  onSeekBeyondBuffer = null,
   // ── Subtitles ────────────────────────────────────────────────
   // subtitleTracks: [{ language, language_name, file_id }]
   // selectedSubtitle: language code ('en', 'es', etc.) or null for off
@@ -185,6 +196,14 @@ export default function HlsVideo({
   const switchTimerRef = useRef(null);
   const revertingRef = useRef(false);
   const switchToastTimerRef = useRef(null);
+
+  // ── Seek-by-restart state ─────────────────────────────────────
+  // Debounce + latest-callback ref so the in-flight scrubber drag only
+  // commits one session restart (at the drag's final position).
+  const onSeekBeyondBufferRef = useRef(onSeekBeyondBuffer);
+  const seekRestartTimerRef = useRef(null);
+  const seekRestartTargetRef = useRef(null);
+  useEffect(() => { onSeekBeyondBufferRef.current = onSeekBeyondBuffer; }, [onSeekBeyondBuffer]);
 
   const [isSwitching, setIsSwitching] = useState(false);
   const [switchTargetLabel, setSwitchTargetLabel] = useState(null);
@@ -528,17 +547,80 @@ export default function HlsVideo({
 
   const onProgressLeave = useCallback(() => setHoverTime(null), []);
 
+  // ─────────────────────────────────────────────────────────
+  // Real-coordinate seek with seek-by-restart.
+  //
+  // Two cases force a fresh ffmpeg session (delegated to the parent
+  // via `onSeekBeyondBuffer`):
+  //   A. Backward across the current session's start (realSec < off).
+  //      ffmpeg never saw anything before `off`, so the only way to play
+  //      there is to spawn a new session with `-ss realSec`.
+  //   B. Forward into segments ffmpeg hasn't written yet
+  //      (localTarget > bufferedEnd + margin). Setting v.currentTime
+  //      would stall hls.js because the requested segment doesn't exist.
+  //
+  // The scrubber drags by repeatedly calling this on pointermove. We
+  // debounce the session-restart 350ms so a drag commits exactly one
+  // restart at its final position. Mid-drag we still update
+  // v.currentTime locally for visual feedback (the seek will silently
+  // stall at the buffer edge — harmless since the restart is coming).
+  // ─────────────────────────────────────────────────────────
   const seekToReal = useCallback((realSec) => {
     const v = videoRef.current;
     if (!v) return;
     const off = sessionStartOffset || 0;
-    if (realSec < off) {
-      // Below current session's start — clamp. TODO: mint a new session
-      // at `realSec` to enable backward cross-boundary scrubbing.
-      seekTo(0);
+
+    // Compute current bufferedEnd in session-local seconds.
+    let bufferedEnd = 0;
+    try {
+      for (let i = 0; i < v.buffered.length; i++) {
+        const end = v.buffered.end(i);
+        if (end > bufferedEnd) bufferedEnd = end;
+      }
+    } catch (_) {}
+
+    // Seeks within ~12s of the buffered edge are handled natively
+    // (hls.js will pull the next 1-2 segments in well under a second).
+    const SEEK_RESTART_MARGIN_S = 12;
+    const localTarget = Math.max(0, realSec - off);
+    const canRestart  = !!onSeekBeyondBufferRef.current;
+    const needsRestart = canRestart && (
+      realSec < off
+      || localTarget > bufferedEnd + SEEK_RESTART_MARGIN_S
+    );
+
+    if (!needsRestart) {
+      // ── Fast path — native seek inside the current session ───────
+      // (Existing behavior, untouched.)
+      if (realSec < off) {
+        // Below current session's start AND no restart callback available
+        // — clamp to the session's first segment (same as pre-fix).
+        seekTo(0);
+      } else {
+        seekTo(localTarget);
+      }
       return;
     }
-    seekTo(realSec - off);
+
+    // ── Restart path — parent will mint a fresh session ────────────
+    // Optimistically nudge v.currentTime mid-drag so the scrubber
+    // thumb tracks the user's finger; hls.js stall at the buffer edge
+    // is fine, the new src will replace it within ~1-3s.
+    if (realSec >= off) {
+      try { seekTo(localTarget); } catch (_) {}
+    }
+
+    // Debounce: cancel any pending restart, schedule a new one.
+    if (seekRestartTimerRef.current) clearTimeout(seekRestartTimerRef.current);
+    seekRestartTargetRef.current = realSec;
+    seekRestartTimerRef.current = setTimeout(() => {
+      seekRestartTimerRef.current = null;
+      const target = seekRestartTargetRef.current;
+      seekRestartTargetRef.current = null;
+      if (target != null && onSeekBeyondBufferRef.current) {
+        try { onSeekBeyondBufferRef.current(target); } catch (_) {}
+      }
+    }, 350);
   }, [seekTo, sessionStartOffset]);
 
   const onProgressPointerDown = useCallback((e) => {
@@ -813,6 +895,7 @@ export default function HlsVideo({
     if (switchTimerRef.current) clearTimeout(switchTimerRef.current);
     if (switchToastTimerRef.current) clearTimeout(switchToastTimerRef.current);
     if (resumeToastTimerRef.current) clearTimeout(resumeToastTimerRef.current);
+    if (seekRestartTimerRef.current) clearTimeout(seekRestartTimerRef.current);
   }, []);
 
   // ─────────────────────────────────────────────────────────

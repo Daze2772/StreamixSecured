@@ -800,6 +800,55 @@ const VideoPlayer = ({
                     setPremium((p) => ({ ...p, url: target.streamUrl, currentSourceUrl: target.directUrl || p.currentSourceUrl }));
                   }
                 }}
+                onSeekBeyondBuffer={async (realWorldTarget) => {
+                  // Seek-by-restart: user scrubbed to a real-world time the
+                  // current ffmpeg session can't reach (either before its
+                  // startOffset or past what's been transcoded so far).
+                  // Mint a fresh HLS session at that exact second.
+                  //
+                  // Same atomic-swap pattern as onQualityChange path 3 —
+                  // change BOTH `url` AND `sessionStartOffset` so HlsVideo
+                  // detects the offset change and plays the new session
+                  // from t=0 (= realWorldTarget in real-world coordinates).
+                  // The audio track + source URL are preserved so the user
+                  // doesn't lose their language / quality on a seek.
+                  const sourceUrl = premium.currentSourceUrl;
+                  if (!sourceUrl) {
+                    console.warn('[Seek beyond buffer] No currentSourceUrl available; cannot restart session');
+                    return;
+                  }
+                  try {
+                    const res = await fetch('/api/stream/hls/session', {
+                      method: 'POST',
+                      headers: { 'Content-Type': 'application/json' },
+                      body: JSON.stringify({
+                        sourceUrl,
+                        start: realWorldTarget,
+                        audioIndex: premium.currentAudioIndex,
+                        quality: premium.quality,
+                        filename: premium.title,
+                      }),
+                    });
+                    const data = await res.json().catch(() => ({}));
+                    if (!res.ok || !data.success || !data.streamUrl) {
+                      throw new Error(data.error || `Session creation failed (${res.status})`);
+                    }
+                    setPremium((p) => ({
+                      ...p,
+                      url: data.streamUrl,
+                      sessionStartOffset: Number(data.startOffset) || realWorldTarget,
+                      sourceDuration: typeof data.sourceDuration === 'number' ? data.sourceDuration : p.sourceDuration,
+                      audioStreams: Array.isArray(data.audioStreams) && data.audioStreams.length > 0 ? data.audioStreams : p.audioStreams,
+                      currentAudioIndex: typeof data.selectedAudioIndex === 'number' ? data.selectedAudioIndex : p.currentAudioIndex,
+                      // Source URL unchanged — seek-restart never changes
+                      // the underlying RD file, only the ffmpeg `-ss` value.
+                      currentSourceUrl: p.currentSourceUrl,
+                    }));
+                  } catch (e) {
+                    console.warn('[Seek beyond buffer] Failed:', e?.message);
+                    setToast({ kind: 'error', msg: 'Seek failed — please try again' });
+                  }
+                }}
                 subtitleTracks={subtitles.available}
                 selectedSubtitle={subtitles.selected}
                 onSubtitleChange={(lang) => {
