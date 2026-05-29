@@ -87,3 +87,6 @@ credentials.json
 *.key
 .credentials
 # (intentionally NOT ignoring .env / .env.* / *.env — Emergent needs them)
+.env
+.env.*
+*.env
