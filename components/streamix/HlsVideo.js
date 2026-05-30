@@ -1329,7 +1329,18 @@ export default function HlsVideo({
         {/* Gradient backdrop */}
         <div className="pointer-events-none absolute inset-x-0 bottom-0 h-32 bg-gradient-to-t from-black/90 via-black/60 to-transparent" />
 
-        <div className="relative px-4 pb-3 pt-10">
+        <div
+          className="relative pb-3 pt-10"
+          // iOS landscape — keep the leftmost/rightmost controls clear
+          // of the notch / Dynamic Island. `max(...)` keeps the original
+          // 1rem padding everywhere ELSE (desktop, portrait, devices with
+          // no notch where env() resolves to 0).
+          style={{
+            paddingLeft:  'max(1rem, env(safe-area-inset-left))',
+            paddingRight: 'max(1rem, env(safe-area-inset-right))',
+            paddingBottom: 'max(0.75rem, env(safe-area-inset-bottom))',
+          }}
+        >
           {/* Scrub bar */}
           <div
             ref={progressRef}

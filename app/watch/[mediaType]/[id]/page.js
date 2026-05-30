@@ -152,7 +152,13 @@ const WatchPage = () => {
     <main className="min-h-screen bg-black text-white">
       {/* Top bar */}
       <div className="hide-landscape-phone sticky top-0 z-40 bg-black/95 backdrop-blur border-b border-white/5">
-        <div className="flex items-center justify-between px-4 md:px-8 h-14">
+        <div
+          // Mobile: max(1rem, notch).  Desktop (md+): max(2rem, notch).
+          // The `max()` keeps the existing px-4 / md:px-8 visuals on
+          // notch-less devices (where env() resolves to 0) AND pushes
+          // content clear of the iPhone notch on iOS landscape.
+          className="flex items-center justify-between h-14 pl-[max(1rem,env(safe-area-inset-left))] pr-[max(1rem,env(safe-area-inset-right))] md:pl-[max(2rem,env(safe-area-inset-left))] md:pr-[max(2rem,env(safe-area-inset-right))]"
+        >
           <button
             onClick={handleBackHome}
             className="flex items-center gap-2 text-sm font-medium text-neutral-200 hover:text-white"

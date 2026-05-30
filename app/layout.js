@@ -9,6 +9,17 @@ export const metadata = {
   description: 'Stream unlimited movies and TV shows. Discover trending, popular, and top-rated content powered by TMDB.',
 }
 
+// `viewport-fit=cover` is REQUIRED for iOS Safari to expose the
+// `env(safe-area-inset-*)` CSS variables. Without it those return 0,
+// which causes the rightmost player control (fullscreen) to be clipped
+// under the iPhone notch in landscape on devices with a Dynamic Island.
+export const viewport = {
+  width: 'device-width',
+  initialScale: 1,
+  viewportFit: 'cover',
+  themeColor: '#000000',
+}
+
 export default function RootLayout({ children }) {
   return (
     <html lang="en" className="dark">
