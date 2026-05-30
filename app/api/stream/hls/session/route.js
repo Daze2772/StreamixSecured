@@ -56,10 +56,26 @@ const ALLOWED_SOURCE_PREFIXES = [
   'https://comet.elfhosted.com/playback/',
 ];
 
-// Security limits to prevent ffmpeg DoS
-const MAX_SESSIONS_PER_IP_PER_MINUTE = 5;
-const MAX_CONCURRENT_SESSIONS_PER_IP = 3;
-const MAX_GLOBAL_CONCURRENT_SESSIONS = 50;
+// Security limits to prevent ffmpeg DoS.
+//
+// IMPORTANT — these caps must accommodate the seek-by-restart flow:
+// every time a user scrubs to an unbuffered position, a NEW session is
+// created and the OLD one lingers for up to ~5 min (IDLE_TTL_MS in
+// hls-sessions.js). So a single iPhone user actively seeking can easily
+// have 4-6 in-flight sessions counted against their IP. We pad
+// generously and shorten the per-IP tracking window to match the
+// underlying session lifecycle.
+const MAX_SESSIONS_PER_IP_PER_MINUTE = 12; // was 5 — covered seek-spam
+const MAX_CONCURRENT_SESSIONS_PER_IP = 8;  // was 3 — covered seek-spam
+const MAX_GLOBAL_CONCURRENT_SESSIONS = 60; // was 50 — small headroom bump
+
+// How long we track a session against its creator's IP for the
+// concurrent-session cap. Was 10 min; now 4 min, which matches the
+// IDLE_TTL_MS in hls-sessions.js (5 min) closely. The underlying ffmpeg
+// will be dead before this expires anyway, so all 4-min entries are
+// effectively zombie reservations — keeping it short prevents stale
+// entries from blocking legitimate new sessions.
+const IP_SESSION_TRACKING_MS = 4 * 60 * 1000;
 
 const isAllowedSource = (url) => {
   if (typeof url !== 'string') return false;
@@ -155,7 +171,7 @@ export async function POST(request) {
           activeSessionsByIp.delete(clientIp);
         }
       }
-    }, 10 * 60 * 1000); // 10 minutes max session lifetime for tracking
+    }, IP_SESSION_TRACKING_MS); // see comment near top of file for rationale
 
     // ── FAST PATH: probe cache hit ────────────────────────────────
     // If we've probed this sourceUrl before (typical for audio/quality

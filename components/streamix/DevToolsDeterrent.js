@@ -28,6 +28,32 @@ export function DevToolsDeterrent() {
       return;
     }
 
+    // ── Skip on touch / mobile devices ────────────────────────────────
+    // The viewport-delta heuristic below is fundamentally broken on
+    // mobile Safari and Chrome:
+    //   • The URL bar showing/hiding changes innerHeight by ~80px
+    //   • Rotating the device flips outer/inner dimensions
+    //   • The on-screen keyboard shrinks innerHeight by ~250px
+    //   • PWA install banners, "Open in App" prompts, share sheets, etc.
+    //     all temporarily change the viewport math
+    // Any of these trips the 160px threshold and fires a false-positive
+    // warning that completely blocks the page until dismissed — terrible UX.
+    //
+    // And opening DevTools on a phone is not even possible without
+    // plugging into a desktop and using Safari/Chrome remote inspection.
+    // So the deterrent has ~0% security value on touch devices but ~100%
+    // UX downside. Just disable it.
+    const isTouchDevice = (
+      typeof window !== 'undefined' && (
+        'ontouchstart' in window ||
+        (navigator && navigator.maxTouchPoints > 0) ||
+        (window.matchMedia && window.matchMedia('(hover: none), (pointer: coarse)').matches)
+      )
+    );
+    if (isTouchDevice) {
+      return;
+    }
+
     let threshold = 160; // Width/height difference threshold
     let checkCount = 0;
     const MAX_CHECKS = 3; // Show warning after 3 detections

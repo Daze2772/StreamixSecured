@@ -594,7 +594,23 @@ const VideoPlayer = ({
     <div className="w-full">
       {/* Player frame */}
       <div className="relative w-full bg-black">
-        <div className="relative w-full mx-auto bg-black" style={{ maxWidth: '1400px' }}>
+        {/*
+          Sizing rules:
+            • MOBILE (default, < md): full-width with 16:9 aspect ratio,
+              exactly as before. Touch this and stuff breaks again.
+            • DESKTOP (md+): cap the player so it doesn't dominate the
+              viewport, YouTube-style. We constrain by EITHER:
+                — a max width of 1100px (so it's not absurd on 4K), OR
+                — enough width to keep the 16:9 player inside ~78% of the
+                  dynamic viewport height (so title/details stay visible
+                  below it without scrolling)
+              — whichever is SMALLER. `dvh` is used (not `vh`) so iPad /
+              landscape phones / desktop-Safari don't jump when scrollbars
+              or chrome UI animate in.
+        */}
+        <div
+          className="relative w-full mx-auto bg-black md:max-w-[min(1100px,calc((100dvh-8rem)*16/9))]"
+        >
           <div className="relative w-full aspect-video bg-black">
             {/* Lazy overlay — player only mounts after click */}
             {!playerActive && !showTrailer && (
