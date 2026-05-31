@@ -9,7 +9,7 @@ import time
 import json
 
 # Base URL from environment
-BASE_URL = "https://hls-player-test-1.preview.emergentagent.com/api"
+BASE_URL = "https://video-stream-test-2.preview.emergentagent.com/api"
 
 # Test data
 CLIENT_ID = "test-client-progress-123"
