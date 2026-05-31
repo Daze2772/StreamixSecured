@@ -1,5 +1,25 @@
 import { NextResponse } from 'next/server';
-import { createSession, ensureFfmpeg } from '@/lib/hls-sessions';
+import { createSession, probeSourceOnly } from '@/lib/hls-sessions';
+import dns from 'dns';
+
+// ── Force IPv4-first DNS resolution ─────────────────────────────────
+// Node 18+ defaults to `verbatim: true` for dns.lookup, which can return
+// IPv6 AAAA records before IPv4 A records. Jackett (and many local services)
+// only bind to IPv4 by default, so `fetch('http://localhost:9117/...')` will
+// try `::1` first, hang until the AbortSignal fires, and surface as a
+// TimeoutError. Setting ipv4first globally restores Node 16 behavior and
+// is safe — any service that's IPv6-only will still work via its hostname.
+try { dns.setDefaultResultOrder('ipv4first'); } catch (_) { /* old node */ }
+
+// Belt-and-suspenders: rewrite localhost → 127.0.0.1 in any URL before
+// fetching. Some libraries cache the lookup result before the ipv4first
+// flag takes effect.
+function forceIpv4(url) {
+  if (!url) return url;
+  return url
+    .replace(/\/\/localhost(?=[:/]|$)/i, '//127.0.0.1')
+    .replace(/\/\/0\.0\.0\.0(?=[:/]|$)/, '//127.0.0.1');
+}
 
 /**
  * Real-Debrid resolver — Comet edition, HLS delivery.
@@ -55,14 +75,20 @@ function getCometBase() {
  * sorted by quality + seeders, with cached status.
  */
 async function fetchJackettStreams(mediaType, imdbId, tmdbId, season, episode) {
+  const t0 = Date.now();
   try {
-    const JACKETT_URL = process.env.JACKETT_URL || 'http://localhost:9117';
+    const JACKETT_URL_RAW = process.env.JACKETT_URL || 'http://localhost:9117';
+    const JACKETT_URL = forceIpv4(JACKETT_URL_RAW);
     const JACKETT_API_KEY = process.env.JACKETT_API_KEY;
     const RD_API_KEY = process.env.RD_API_KEY;
 
     if (!JACKETT_API_KEY) {
       console.warn('[Jackett] API key not configured, skipping');
       return [];
+    }
+
+    if (JACKETT_URL !== JACKETT_URL_RAW) {
+      console.log(`[Jackett] Rewrote URL ${JACKETT_URL_RAW} → ${JACKETT_URL} (IPv4-force)`);
     }
 
     // Build search query - we need title from TMDB
@@ -103,11 +129,20 @@ async function fetchJackettStreams(mediaType, imdbId, tmdbId, season, episode) {
     if (searchQuery) jackettUrl.searchParams.set('Query', searchQuery);
     if (imdbId) jackettUrl.searchParams.set('imdbid', imdbId.replace('tt', ''));
 
-    console.log(`[Jackett] Searching: ${searchQuery}`);
+    // Don't leak api key into logs — strip apikey query param when logging URL
+    const safeUrl = jackettUrl.toString().replace(/(apikey=)[^&]+/i, '$1[REDACTED]');
+    console.log(`[Jackett] GET ${safeUrl} (query="${searchQuery}")`);
+    const startTime = Date.now();
 
+    // 25s is generous — Jackett's "all indexers" endpoint typically returns
+    // partial results within 10–15s even with 50+ indexers configured. Going
+    // higher just blocks the user-facing /api/realdebrid/resolve longer.
     const jackettRes = await fetch(jackettUrl.toString(), {
-      signal: AbortSignal.timeout(15000),
+      signal: AbortSignal.timeout(25000),
+      headers: { 'User-Agent': 'Streamix/1.0' },
     });
+    
+    console.log(`[Jackett] Search completed in ${Date.now() - startTime}ms (status=${jackettRes.status})`);
 
     if (!jackettRes.ok) {
       console.warn(`[Jackett] Search failed: ${jackettRes.status}`);
@@ -179,12 +214,26 @@ async function fetchJackettStreams(mediaType, imdbId, tmdbId, season, episode) {
       return (b.seeders || 0) - (a.seeders || 0);
     });
 
-    console.log(`[Jackett] Found ${results.length} torrents (${results.filter(r => r.cached).length} cached)`);
+    console.log(`[Jackett] Found ${results.length} torrents (${results.filter(r => r.cached).length} cached) in ${Date.now() - t0}ms total`);
     
     return results.slice(0, 20); // Return top 20
 
   } catch (error) {
-    console.error('[Jackett] Error:', error);
+    const elapsed = Date.now() - t0;
+    // Distinguish abort/timeout from other failures so the user-visible log
+    // line points at the right thing (network/dns vs slow Jackett vs config).
+    const isTimeout = error?.name === 'TimeoutError' || /aborted|timeout/i.test(error?.message || '');
+    if (isTimeout) {
+      console.error(
+        `[Jackett] TIMEOUT after ${elapsed}ms — common causes: ` +
+        `1) JACKETT_URL points to wrong host/port (current: ${process.env.JACKETT_URL || 'http://localhost:9117'}) ` +
+        `2) Jackett process not running (check 'systemctl status jackett') ` +
+        `3) Firewall blocking the port. ` +
+        `Try: curl -s "${(process.env.JACKETT_URL || 'http://127.0.0.1:9117').replace(/\/$/, '')}/api/v2.0/server/config?apikey=<key>"`
+      );
+    } else {
+      console.error(`[Jackett] Error after ${elapsed}ms:`, error.message);
+    }
     return [];
   }
 }
@@ -300,6 +349,23 @@ function rankStream(filename, sizeBytes, name = '') {
   else if (/\b(2160p|4k|uhd)\b/.test(n)) score -= 100;       // huge + HEVC usually
   else if (/\b480p\b/.test(n)) score += 50;
 
+  // ─── Dolby Vision penalty ────────────────────────────────────
+  // DOVI sources (HEVC w/ proprietary RPU NAL units) crash ffmpeg's HEVC
+  // parser with "Error parsing DOVI NAL unit / RPU validation failed",
+  // which causes our HLS session to die before producing a playlist —
+  // the player then spins forever. We have ffmpeg-side defenses (see
+  // hls-sessions.js: hevc_metadata bsf + err_detect ignore_err), but the
+  // cheapest fix is to just not pick DOVI versions when an SDR/HDR10
+  // alternative is available.
+  //
+  // Heavy penalty (-3000) ensures DOVI ranks below ALL non-DOVI options
+  // but still above UNKNOWN-quality (which is -100000) — so if DOVI is
+  // the ONLY available release we'll still try it with the ffmpeg
+  // defenses active.
+  if (/\b(do?vi|dolby[.\s_-]?vision|dv[.\s_-]?(?:hdr|p[58]|profile)|dvhe|dvh1)\b/i.test(n)) {
+    score -= 3000;
+  }
+
   // ─── Source quality (cleaner audio/subs usually) ─────────────
   if (/\bweb[-. ]?dl\b/.test(n)) score += 100;
   if (/\bwebrip\b/.test(n)) score += 80;
@@ -326,23 +392,49 @@ function rankStream(filename, sizeBytes, name = '') {
   return score;
 }
 
-/** Create an HLS session, probe duration synchronously, and return playlist URL + metadata. */
-async function buildHlsUrl(sourceUrl, meta = {}, startOffset = 0, audioIndex = null, probeTimeout = 5000) {
+/**
+ * Create an HLS session and return playlist URL + metadata.
+ *
+ * IMPORTANT (June 2025): We used to call `ensureFfmpeg(session, 5000)` here
+ * to probe duration synchronously. That had a fatal flaw for problematic
+ * sources (DOVI HEVC, weird codecs, slow CDN responses): if ffmpeg didn't
+ * produce a playlist in 5s, `ensureFfmpeg` would SIGKILL the ffmpeg process
+ * AND cache the rejected startup promise on the session — so the browser's
+ * subsequent `/index.m3u8` GET would re-await the same rejected promise and
+ * the session was permanently dead.
+ *
+ * Now we use `probeSourceOnly()` (ffprobe-only, no ffmpeg spawn) to fetch
+ * duration + audio metadata for the resolver response. The actual ffmpeg
+ * session starts LAZILY on the first browser playlist GET, with the full
+ * 30s startup timeout window. This means:
+ *   - Fast sources still respond fast (no double-probe penalty)
+ *   - DOVI/slow sources get a chance to start ffmpeg with proper time budget
+ *   - Sessions the browser never plays don't waste an ffmpeg process
+ */
+async function buildHlsUrl(sourceUrl, meta = {}, startOffset = 0, audioIndex = null, _legacyProbeTimeout) {
   const session = createSession(sourceUrl, meta, startOffset, audioIndex);
-  // Probe synchronously so sourceDuration is available in the resolver
-  // response. Uses a 5s timeout (not 30s) so dead/slow streams fail fast
-  // without blocking the resolver for a minute. If probe fails we return
-  // null and the frontend gracefully falls back to growing-duration.
+  // Probe via ffprobe only — no ffmpeg spawn. 12s gives slow RD CDN URLs
+  // enough time to enumerate streams without breaking the user-facing
+  // resolver SLA. If probe fails, the frontend gracefully falls back to
+  // growing-duration mode and the session still starts ffmpeg on demand.
+  let probed = null;
   try {
-    await ensureFfmpeg(session, probeTimeout);
+    probed = await probeSourceOnly(sourceUrl, 12000);
   } catch (e) {
-    console.warn(`[RD] Duration probe failed for session ${session.id}:`, e?.message);
+    console.warn(`[RD] Source probe failed for session ${session.id}:`, e?.message);
+  }
+  // Mirror the metadata onto the session so /api/stream/hls/session and the
+  // lazy ensureFfmpeg path can short-circuit ffprobe via the cache.
+  if (probed) {
+    session.sourceDuration = probed.duration || null;
+    session.audioStreams = probed.audioStreams || [];
+    session.selectedAudioIndex = probed.selectedAudioIndex ?? 0;
   }
   return {
     streamUrl: `/api/stream/hls/${session.id}/index.m3u8`,
-    sourceDuration: session.sourceDuration || null,
-    audioStreams: session.audioStreams || [],
-    selectedAudioIndex: session.selectedAudioIndex ?? 0,
+    sourceDuration: probed?.duration || null,
+    audioStreams: probed?.audioStreams || [],
+    selectedAudioIndex: probed?.selectedAudioIndex ?? 0,
   };
 }
 

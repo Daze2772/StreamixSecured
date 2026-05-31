@@ -1,4 +1,5 @@
 import { NextResponse } from 'next/server';
+import dns from 'dns';
 
 /**
  * Jackett Search API
@@ -7,7 +8,17 @@ import { NextResponse } from 'next/server';
  * Returns magnet links with metadata (quality, size, seeders).
  */
 
-const JACKETT_URL = process.env.JACKETT_URL || 'http://localhost:9117';
+// Force IPv4-first DNS — see /app/app/api/realdebrid/resolve/route.js for rationale.
+try { dns.setDefaultResultOrder('ipv4first'); } catch (_) { /* old node */ }
+
+function forceIpv4(url) {
+  if (!url) return url;
+  return url
+    .replace(/\/\/localhost(?=[:/]|$)/i, '//127.0.0.1')
+    .replace(/\/\/0\.0\.0\.0(?=[:/]|$)/, '//127.0.0.1');
+}
+
+const JACKETT_URL = forceIpv4(process.env.JACKETT_URL || 'http://localhost:9117');
 const JACKETT_API_KEY = process.env.JACKETT_API_KEY;
 
 export async function GET(request) {
@@ -53,10 +64,14 @@ export async function GET(request) {
     }
 
     console.log('[Jackett] Searching:', searchQuery, imdbId || '');
+    const startTime = Date.now();
 
     const response = await fetch(jackettUrl.toString(), {
-      signal: AbortSignal.timeout(15000), // 15s timeout
+      signal: AbortSignal.timeout(25000), // 25s — long enough for slow indexers
+      headers: { 'User-Agent': 'Streamix/1.0' },
     });
+
+    console.log(`[Jackett] Search completed in ${Date.now() - startTime}ms (status=${response.status})`);
 
     if (!response.ok) {
       throw new Error(`Jackett returned ${response.status}`);

@@ -2373,3 +2373,63 @@ agent_communication:
       Both fixes are minimal, surgical, no other code paths touched.
       Backend security (17/17) + Continue Watching + all hot paths untouched.
 
+
+# ============================================================
+# Jackett TimeoutError + DOVI ffmpeg crash fixes (June 2025)
+# ============================================================
+
+agent_communication:
+  - agent: "main"
+    message: |
+      P0 — Jackett TimeoutError in production:
+
+      Root cause: Node 18+ resolves `localhost` to IPv6 `::1` (via verbatim
+      DNS), but Jackett binds to IPv4 by default. fetch hangs until
+      AbortSignal fires → DOMException [TimeoutError].
+
+      Fix in /app/app/api/realdebrid/resolve/route.js + /app/app/api/jackett/search/route.js:
+        - dns.setDefaultResultOrder('ipv4first') at module load
+        - forceIpv4(url) helper rewrites localhost/0.0.0.0 → 127.0.0.1
+        - Reduced timeout 45s → 25s (still generous)
+        - Improved error logging — TimeoutError now prints diagnostic
+          hints (URL, common causes, curl repro command)
+
+      P1 — DOVI ffmpeg crash:
+
+      Root cause #1: Dolby Vision HEVC sources have proprietary RPU NAL
+      units that crash ffmpeg's HEVC parser ("Error parsing DOVI NAL unit
+      / RPU validation failed"). ffmpeg keeps running but produces no
+      output, our 5s probe timeout SIGKILLs it, AND the rejected
+      startupPromise is cached on the session — so the browser's
+      subsequent playlist GET re-awaits a permanently-failed promise.
+
+      Root cause #2: The resolver's early ensureFfmpeg(session, 5000)
+      call was the wrong primitive for "probe duration" — it spawned a
+      full ffmpeg session and killed it on timeout.
+
+      Fix in /app/lib/hls-sessions.js:
+        - New probeSourceOnly() export — ffprobe-only, no ffmpeg spawn
+        - detectFfmpegFeatures() detects ffmpeg ≥ 5.1 at startup
+        - Added -err_detect ignore_err -fflags +discardcorrupt+genpts+igndts
+          to ffmpeg args (general resilience for malformed packets)
+        - For HEVC sources on ffmpeg ≥ 5.1: input-side bsf
+          `hevc_metadata=remove_dovi_rpu=1` to strip DOVI RPU before
+          decoding
+
+      Fix in /app/app/api/realdebrid/resolve/route.js:
+        - buildHlsUrl() now uses probeSourceOnly() instead of
+          ensureFfmpeg(session, 5000). ffmpeg now spawns LAZILY on first
+          browser playlist GET, with the full 30s startup window.
+        - rankStream() now penalizes DOVI/dolby vision/dvhe/dvh1 tags
+          by -3000 so SDR/HDR10 versions are chosen first when available
+          (DOVI is still pickable if it's the only release available)
+
+      Verification:
+        - Lint: clean on all 3 files
+        - Local container: app loads, /api/jackett/search correctly
+          returns "not configured" (no JACKETT_API_KEY in container .env)
+        - Production verification REQUIRED by user — these fixes target
+          their Azure VM environment which has Jackett + DOVI content
+
+      Deployment: user clicks "Save to GitHub" then runs on Azure VM:
+        cd /opt/streamix && git pull && rm -rf .next && yarn build && pm2 restart streamix
