@@ -20,11 +20,31 @@ import { createSession, ensureFfmpeg } from '@/lib/hls-sessions';
  * is no longer codec-fragile.
  */
 
-const RD_ADDON_MANIFEST_URL = process.env.RD_ADDON_MANIFEST_URL;
+const RD_ADDON_MANIFEST_URL        = process.env.RD_ADDON_MANIFEST_URL;
+// Backup Comet manifest URL — used as a fallback ONLY when the primary
+// URL returns 0 cached streams for a title. Typically configured with
+// looser filters (no language preference, no resolution floor, larger
+// size cap) to improve hit rate for foreign content (Turkish, Arabic,
+// non-English releases) that the primary URL's English bias rejects.
+//
+// IMPORTANT: even if this backup URL is configured with `cachedOnly: false`,
+// the resolver below ALWAYS filters to RD-cached streams (the ⚡ badge).
+// Uncached streams can't play instantly via our HLS pipeline and are
+// silently dropped, so misconfiguration here can never break playback.
+const RD_ADDON_MANIFEST_URL_BACKUP = process.env.RD_ADDON_MANIFEST_URL_BACKUP;
 
+// Returns `[primaryBase, backupBase | null]` — each is the addon URL
+// minus the trailing `/manifest.json` so we can append `/stream/...`.
+function getCometBases() {
+  const norm = (u) => u
+    ? u.replace(/\/manifest\.json\s*$/i, '').replace(/\/+$/, '')
+    : null;
+  return [norm(RD_ADDON_MANIFEST_URL), norm(RD_ADDON_MANIFEST_URL_BACKUP)];
+}
+
+// Backwards-compat — internal callers still using the old name keep working.
 function getCometBase() {
-  if (!RD_ADDON_MANIFEST_URL) return null;
-  return RD_ADDON_MANIFEST_URL.replace(/\/manifest\.json\s*$/i, '').replace(/\/+$/, '');
+  return getCometBases()[0];
 }
 
 // Resolution tag we can pull from a release filename (e.g. "Fight.Club.1080p.BrRip.x264.mp4").
@@ -168,7 +188,7 @@ async function buildHlsUrl(sourceUrl, meta = {}, startOffset = 0, audioIndex = n
 }
 
 export async function GET(request) {
-  const cometBase = getCometBase();
+  const [cometBase, cometBackup] = getCometBases();
   if (!cometBase) {
     return NextResponse.json(
       { error: 'Real-Debrid not configured (RD_ADDON_MANIFEST_URL missing)' },
@@ -220,43 +240,70 @@ export async function GET(request) {
     const streamId = mediaType === 'tv' ? `${id}:${season}:${episode}` : id;
     const streamType = mediaType === 'tv' ? 'series' : 'movie';
 
-    const url = `${cometBase}/stream/${streamType}/${streamId}.json`;
-    console.log(`[RD] Querying Comet: ${streamType}/${streamId}`);
+    // ── Comet fetch helper ────────────────────────────────────────
+    // Returns an array of valid (cached, non-UNKNOWN, http) streams
+    // already scored + sorted high-to-low. Empty array on any failure
+    // (network error, non-2xx, malformed JSON) so callers can fall
+    // through to the backup manifest without try/catch noise.
+    const fetchAndRank = async (base, label) => {
+      if (!base) return [];
+      try {
+        const u = `${base}/stream/${streamType}/${streamId}.json`;
+        console.log(`[RD] Querying Comet (${label}): ${streamType}/${streamId}`);
+        const r = await fetch(u, { headers: { 'User-Agent': 'Streamix/1.0' } });
+        if (!r.ok) {
+          console.warn(`[RD] Comet ${label} returned ${r.status}`);
+          return [];
+        }
+        const data = await r.json();
+        if (!data.streams || !Array.isArray(data.streams)) return [];
 
-    const response = await fetch(url, {
-      headers: { 'User-Agent': 'Streamix/1.0' },
-    });
-    if (!response.ok) throw new Error(`Comet returned ${response.status}`);
+        return data.streams
+          .filter((s) => s.url && /^https?:\/\//i.test(s.url))
+          .filter((s) => !/\bUNKNOWN\b/i.test(s.name || ''))
+          .map((s) => {
+            const filename = s?.behaviorHints?.filename || s.name || '';
+            const sizeBytes = Number(s?.behaviorHints?.videoSize) || 0;
+            const cometName = s.name || ''; // e.g. "[RD⚡] Comet 1080p"
+            return {
+              url: s.url,
+              name: cometName || filename || 'Unknown',
+              filename,
+              sizeBytes,
+              cached: /⚡/.test(cometName),
+              score: rankStream(filename || cometName, sizeBytes, cometName),
+            };
+          })
+          // Defense-in-depth: even if a manifest URL is misconfigured
+          // with `cachedOnly: false`, drop uncached streams here.
+          // Uncached RD URLs can't play instantly via the HLS pipeline
+          // — they'd require a multi-minute download to RD first.
+          .filter((s) => s.cached)
+          .sort((a, b) => b.score - a.score);
+      } catch (e) {
+        console.warn(`[RD] Comet ${label} fetch failed:`, e?.message);
+        return [];
+      }
+    };
 
-    const data = await response.json();
-    if (!data.streams || !Array.isArray(data.streams) || data.streams.length === 0) {
+    // Try primary, then fall through to backup if it returned nothing.
+    // Most titles resolve on primary; the backup is a safety net for
+    // foreign content (Turkish, Arabic, etc.) the primary URL's English
+    // language preference + size/resolution caps tend to miss.
+    let validStreams = await fetchAndRank(cometBase, 'primary');
+    if (validStreams.length === 0 && cometBackup) {
+      console.log(`[RD] Primary returned 0 streams for ${streamId}, trying backup manifest`);
+      validStreams = await fetchAndRank(cometBackup, 'backup');
+      if (validStreams.length > 0) {
+        console.log(`[RD] Backup manifest recovered ${validStreams.length} stream(s) for ${streamId}`);
+      }
+    }
+    if (validStreams.length === 0) {
       return NextResponse.json(
         { error: 'No streams found for this title' },
         { status: 404 },
       );
     }
-
-    // Pull filename + size + name (cache badge) out of behaviorHints+stream.
-    // Hard-reject streams whose Comet badge says "UNKNOWN" — those are
-    // content mismatches in 99% of cases (BBC clips, adult content with
-    // overlapping titles, mistagged uploads).
-    const validStreams = data.streams
-      .filter((s) => s.url && /^https?:\/\//i.test(s.url))
-      .filter((s) => !/\bUNKNOWN\b/i.test(s.name || ''))
-      .map((s) => {
-        const filename = s?.behaviorHints?.filename || s.name || '';
-        const sizeBytes = Number(s?.behaviorHints?.videoSize) || 0;
-        const cometName = s.name || ''; // e.g. "[RD⚡] Comet 1080p"
-        return {
-          url: s.url,
-          name: cometName || filename || 'Unknown',
-          filename,
-          sizeBytes,
-          cached: /⚡/.test(cometName),
-          score: rankStream(filename || cometName, sizeBytes, cometName),
-        };
-      })
-      .sort((a, b) => b.score - a.score);
 
     if (!validStreams.length) {
       return NextResponse.json(

@@ -173,6 +173,71 @@ const VideoPlayer = ({
   // re-runs the resolver), we must NOT re-resume from the URL's resume.
   const resumeConsumedRef = useRef(false);
 
+  // ── Resume chip state (Q2 fix) ─────────────────────────────────────
+  // Transcoded HLS resume is fragile: ffmpeg has to seek to the saved
+  // timestamp at session start, which fails when:
+  //   • the RD source URL has expired between sessions
+  //   • the file's container has a quirky index ffmpeg can't seek
+  //   • the session is killed by the per-IP cap before first segment
+  // Instead, Premium tabs always start at 0:00, and we surface a small
+  // "Resume from X:XX →" chip overlay for ~8s. Tapping it triggers our
+  // seek-by-restart path — which is much more reliable than starting
+  // fresh at a non-zero offset (the failure happens AFTER playback has
+  // already started, so the user is never stuck on an infinite spinner).
+  const initialResumeRef = useRef(initialResume);
+  const [showResumeChip, setShowResumeChip] = useState(false);
+  const resumeChipShownRef = useRef(false);
+  const resumeChipTimerRef = useRef(null);
+
+  // ── Centralized seek-by-restart helper ─────────────────────────────
+  // Used by:
+  //   (a) HlsVideo's onSeekBeyondBuffer prop — when the user scrubs past
+  //       the buffered edge of the current ffmpeg session.
+  //   (b) The "Resume from X:XX →" chip — when the user taps to jump
+  //       to their saved Continue-Watching position.
+  // Both flows do the same thing: POST /api/stream/hls/session with the
+  // desired real-world `start` timestamp, swap BOTH url AND
+  // sessionStartOffset atomically so HlsVideo plays the new session from
+  // t=0 (= the desired real-world second).
+  const restartAtTime = useCallback(async (realWorldTarget) => {
+    const sourceUrl = premium.currentSourceUrl;
+    if (!sourceUrl) {
+      console.warn('[Seek restart] No currentSourceUrl available; cannot restart session');
+      return false;
+    }
+    try {
+      const res = await fetch('/api/stream/hls/session', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          sourceUrl,
+          start: realWorldTarget,
+          audioIndex: premium.currentAudioIndex,
+          quality: premium.quality,
+          filename: premium.title,
+        }),
+      });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok || !data.success || !data.streamUrl) {
+        throw new Error(data.error || `Session creation failed (${res.status})`);
+      }
+      setPremium((p) => ({
+        ...p,
+        url: data.streamUrl,
+        sessionStartOffset: Number(data.startOffset) || realWorldTarget,
+        sourceDuration: typeof data.sourceDuration === 'number' ? data.sourceDuration : p.sourceDuration,
+        audioStreams: Array.isArray(data.audioStreams) && data.audioStreams.length > 0 ? data.audioStreams : p.audioStreams,
+        currentAudioIndex: typeof data.selectedAudioIndex === 'number' ? data.selectedAudioIndex : p.currentAudioIndex,
+        currentSourceUrl: p.currentSourceUrl,
+      }));
+      return true;
+    } catch (e) {
+      console.warn('[Seek restart] Failed:', e?.message);
+      setToast({ kind: 'error', msg: 'Seek failed — please try again' });
+      return false;
+    }
+  }, [premium.currentSourceUrl, premium.currentAudioIndex, premium.quality, premium.title]);
+
   // Subtitles state
   const [subtitles, setSubtitles] = useState({ 
     available: [], // [{ file_id, language, language_name, downloads }]
@@ -353,9 +418,16 @@ const VideoPlayer = ({
     // (TV) re-start from 0 of the new episode rather than re-applying
     // the URL's `?resume=` (which was meaningful only for the original
     // {mediaType, tmdbId, season, episode} the user clicked).
-    if (!resumeConsumedRef.current && initialResume > 0) {
-      params.set('start', String(initialResume));
-    }
+    // Q2 fix: Premium tabs ALWAYS start at t=0 — transcoded resume is
+    // too fragile (RD URL expiry, ffmpeg -ss failures, probe cache
+    // mismatch, per-IP cap kills, etc.). The "Resume from X:XX →" chip
+    // overlay (rendered below in the player UI when isPremiumActive +
+    // initialResumeRef > 30s) gives users a one-tap reliable resume via
+    // our seek-by-restart path. The failure happens AFTER playback is
+    // already running, so users never see the dreaded infinite spinner.
+    //
+    // resumeConsumedRef is still flipped so subsequent in-page episode
+    // changes (TV) don't try to re-apply the URL's `?resume=` either.
     resumeConsumedRef.current = true;
 
     fetch(`${apiEndpoint}?${params.toString()}`, { signal: controller.signal })
@@ -563,6 +635,45 @@ const VideoPlayer = ({
     setPlayerActive(false);
   }, [season, episode]);
 
+  // ── Resume chip trigger (Q2 fix) ───────────────────────────────────
+  // When Premium playback becomes ready AND we had a meaningful resume
+  // position from the URL's `?resume=` query, show the chip exactly
+  // once per page-lifetime. Auto-dismiss after 8s.
+  // Skip for tiny positions (<30s) — barely worth resuming, and most
+  // are just from accidental clicks that registered <10s of progress.
+  useEffect(() => {
+    // NB: we reference `activeServer.isPremium` directly here instead of
+    // the `isPremiumActive` const — the const is declared *below* this
+    // effect (in the Render section). TDZ would throw otherwise.
+    if (!activeServer?.isPremium) return;
+    if (premium.state !== 'ok') return;
+    if (!initialResumeRef.current || initialResumeRef.current < 30) return;
+    if (resumeChipShownRef.current) return; // already shown this lifetime
+
+    resumeChipShownRef.current = true;
+    setShowResumeChip(true);
+
+    if (resumeChipTimerRef.current) clearTimeout(resumeChipTimerRef.current);
+    resumeChipTimerRef.current = setTimeout(() => {
+      setShowResumeChip(false);
+    }, 8000);
+
+    return () => {
+      if (resumeChipTimerRef.current) clearTimeout(resumeChipTimerRef.current);
+    };
+  }, [activeServer?.isPremium, premium.state]);
+
+  // Helper for chip's "Resume from X:XX" label
+  const formatResumeTime = useCallback((sec) => {
+    const s = Math.max(0, Math.floor(sec || 0));
+    const h = Math.floor(s / 3600);
+    const m = Math.floor((s % 3600) / 60);
+    const r = s % 60;
+    return h > 0
+      ? `${h}:${String(m).padStart(2, '0')}:${String(r).padStart(2, '0')}`
+      : `${m}:${String(r).padStart(2, '0')}`;
+  }, []);
+
   // ────────────────────────────────────────────────────────────
   // Render
   // ────────────────────────────────────────────────────────────
@@ -684,6 +795,39 @@ const VideoPlayer = ({
                 key because reload/server-change should fully remount. */}
             {playerActive && !showTrailer && isPremiumActive && premium.state === 'ok' && premium.url && (
               <HilltopAdsLoader />
+            )}
+
+            {/* Resume chip (Q2 fix) — visible only when Premium is playing
+                AND we had a saved Continue Watching position. One tap
+                triggers seek-by-restart to the saved position; if it
+                fails, user is already watching from 0:00 so no broken
+                state. Positioned bottom-right of the player; uses inline
+                pointer events so taps don't pass through to the player. */}
+            {playerActive && !showTrailer && isPremiumActive && premium.state === 'ok'
+              && premium.url && showResumeChip && initialResumeRef.current > 30 && (
+              <button
+                type="button"
+                onClick={async (e) => {
+                  e.stopPropagation();
+                  const target = initialResumeRef.current;
+                  setShowResumeChip(false);
+                  if (resumeChipTimerRef.current) clearTimeout(resumeChipTimerRef.current);
+                  // Use the centralized restart helper — same path as
+                  // scrubbing past the buffer, well-tested.
+                  await restartAtTime(target);
+                }}
+                className="absolute z-40 bottom-20 right-4 md:bottom-24 md:right-6
+                           bg-white/95 hover:bg-white text-black
+                           px-4 py-2.5 rounded-full shadow-2xl
+                           text-sm font-semibold
+                           flex items-center gap-2
+                           transition-all duration-200
+                           animate-in fade-in slide-in-from-right-2"
+                aria-label={`Resume from ${formatResumeTime(initialResumeRef.current)}`}
+              >
+                <span>Resume from {formatResumeTime(initialResumeRef.current)}</span>
+                <span aria-hidden="true">→</span>
+              </button>
             )}
             {playerActive && !showTrailer && isPremiumActive && premium.state === 'ok' && premium.url && (
               <HlsVideo
@@ -820,55 +964,7 @@ const VideoPlayer = ({
                     setPremium((p) => ({ ...p, url: target.streamUrl, currentSourceUrl: target.directUrl || p.currentSourceUrl }));
                   }
                 }}
-                onSeekBeyondBuffer={async (realWorldTarget) => {
-                  // Seek-by-restart: user scrubbed to a real-world time the
-                  // current ffmpeg session can't reach (either before its
-                  // startOffset or past what's been transcoded so far).
-                  // Mint a fresh HLS session at that exact second.
-                  //
-                  // Same atomic-swap pattern as onQualityChange path 3 —
-                  // change BOTH `url` AND `sessionStartOffset` so HlsVideo
-                  // detects the offset change and plays the new session
-                  // from t=0 (= realWorldTarget in real-world coordinates).
-                  // The audio track + source URL are preserved so the user
-                  // doesn't lose their language / quality on a seek.
-                  const sourceUrl = premium.currentSourceUrl;
-                  if (!sourceUrl) {
-                    console.warn('[Seek beyond buffer] No currentSourceUrl available; cannot restart session');
-                    return;
-                  }
-                  try {
-                    const res = await fetch('/api/stream/hls/session', {
-                      method: 'POST',
-                      headers: { 'Content-Type': 'application/json' },
-                      body: JSON.stringify({
-                        sourceUrl,
-                        start: realWorldTarget,
-                        audioIndex: premium.currentAudioIndex,
-                        quality: premium.quality,
-                        filename: premium.title,
-                      }),
-                    });
-                    const data = await res.json().catch(() => ({}));
-                    if (!res.ok || !data.success || !data.streamUrl) {
-                      throw new Error(data.error || `Session creation failed (${res.status})`);
-                    }
-                    setPremium((p) => ({
-                      ...p,
-                      url: data.streamUrl,
-                      sessionStartOffset: Number(data.startOffset) || realWorldTarget,
-                      sourceDuration: typeof data.sourceDuration === 'number' ? data.sourceDuration : p.sourceDuration,
-                      audioStreams: Array.isArray(data.audioStreams) && data.audioStreams.length > 0 ? data.audioStreams : p.audioStreams,
-                      currentAudioIndex: typeof data.selectedAudioIndex === 'number' ? data.selectedAudioIndex : p.currentAudioIndex,
-                      // Source URL unchanged — seek-restart never changes
-                      // the underlying RD file, only the ffmpeg `-ss` value.
-                      currentSourceUrl: p.currentSourceUrl,
-                    }));
-                  } catch (e) {
-                    console.warn('[Seek beyond buffer] Failed:', e?.message);
-                    setToast({ kind: 'error', msg: 'Seek failed — please try again' });
-                  }
-                }}
+                onSeekBeyondBuffer={restartAtTime}
                 subtitleTracks={subtitles.available}
                 selectedSubtitle={subtitles.selected}
                 onSubtitleChange={(lang) => {
