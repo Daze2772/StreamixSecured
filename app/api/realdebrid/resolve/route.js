@@ -47,6 +47,165 @@ function getCometBase() {
   return getCometBases()[0];
 }
 
+/**
+ * Jackett Torrent Search Helper
+ * 
+ * Queries Jackett for torrents when Comet returns nothing. Searches across
+ * 50+ indexers and checks RD cache status for each result. Returns torrents
+ * sorted by quality + seeders, with cached status.
+ */
+async function fetchJackettStreams(mediaType, imdbId, tmdbId, season, episode) {
+  try {
+    const JACKETT_URL = process.env.JACKETT_URL || 'http://localhost:9117';
+    const JACKETT_API_KEY = process.env.JACKETT_API_KEY;
+    const RD_API_KEY = process.env.RD_API_KEY;
+
+    if (!JACKETT_API_KEY) {
+      console.warn('[Jackett] API key not configured, skipping');
+      return [];
+    }
+
+    // Build search query - we need title from TMDB
+    let searchQuery = '';
+    
+    // Try to fetch title from TMDB
+    if (tmdbId) {
+      try {
+        const tmdbApiKey = process.env.NEXT_PUBLIC_TMDB_API_KEY;
+        if (tmdbApiKey) {
+          const tmdbUrl = `https://api.themoviedb.org/3/${mediaType === 'tv' ? 'tv' : 'movie'}/${tmdbId}?api_key=${tmdbApiKey}`;
+          const tmdbRes = await fetch(tmdbUrl, { signal: AbortSignal.timeout(5000) });
+          if (tmdbRes.ok) {
+            const tmdbData = await tmdbRes.json();
+            searchQuery = tmdbData.title || tmdbData.name || '';
+          }
+        }
+      } catch (e) {
+        console.warn('[Jackett] TMDB title fetch failed:', e.message);
+      }
+    }
+
+    if (!searchQuery && !imdbId) {
+      console.warn('[Jackett] No search query or IMDb ID available');
+      return [];
+    }
+
+    // Add season/episode for TV shows
+    if (mediaType === 'tv' && season && episode) {
+      const s = String(season).padStart(2, '0');
+      const e = String(episode).padStart(2, '0');
+      searchQuery += ` S${s}E${e}`;
+    }
+
+    // Query Jackett
+    const jackettUrl = new URL(`${JACKETT_URL}/api/v2.0/indexers/all/results`);
+    jackettUrl.searchParams.set('apikey', JACKETT_API_KEY);
+    if (searchQuery) jackettUrl.searchParams.set('Query', searchQuery);
+    if (imdbId) jackettUrl.searchParams.set('imdbid', imdbId.replace('tt', ''));
+
+    console.log(`[Jackett] Searching: ${searchQuery}`);
+
+    const jackettRes = await fetch(jackettUrl.toString(), {
+      signal: AbortSignal.timeout(15000),
+    });
+
+    if (!jackettRes.ok) {
+      console.warn(`[Jackett] Search failed: ${jackettRes.status}`);
+      return [];
+    }
+
+    const jackettData = await jackettRes.json();
+    const results = (jackettData.Results || [])
+      .filter(r => r.MagnetUri)
+      .map(r => {
+        const magnetMatch = r.MagnetUri.match(/btih:([a-fA-F0-9]{40})/i);
+        const infoHash = magnetMatch ? magnetMatch[1].toLowerCase() : null;
+        const title = r.Title || '';
+        
+        return {
+          title,
+          magnetUri: r.MagnetUri,
+          infoHash,
+          size: r.Size || 0,
+          seeders: r.Seeders || 0,
+          indexer: r.Tracker || 'Unknown',
+          quality: extractQualityFromTitle(title),
+          sizeFormatted: formatBytesHelper(r.Size || 0),
+        };
+      })
+      .filter(r => r.infoHash);
+
+    if (results.length === 0) {
+      console.log('[Jackett] No torrents found');
+      return [];
+    }
+
+    // Check RD cache status for all torrents
+    if (RD_API_KEY && results.length > 0) {
+      const hashes = results.map(r => r.infoHash).slice(0, 100);
+      const hashesParam = hashes.join('/');
+      
+      try {
+        const rdRes = await fetch(
+          `https://api.real-debrid.com/rest/1.0/torrents/instantAvailability/${hashesParam}`,
+          {
+            headers: { 'Authorization': `Bearer ${RD_API_KEY}` },
+            signal: AbortSignal.timeout(10000),
+          }
+        );
+
+        if (rdRes.ok) {
+          const rdData = await rdRes.json();
+          
+          // Mark cached status
+          results.forEach(r => {
+            const hashData = rdData[r.infoHash];
+            r.cached = !!(hashData && hashData.rd && hashData.rd.length > 0);
+          });
+        }
+      } catch (e) {
+        console.warn('[Jackett] RD cache check failed:', e.message);
+        // Continue without cache status
+        results.forEach(r => r.cached = false);
+      }
+    }
+
+    // Sort: cached first, then by quality, then by seeders
+    results.sort((a, b) => {
+      if (a.cached !== b.cached) return b.cached ? 1 : -1;
+      const qualityOrder = { '2160p': 4, '1080p': 3, '720p': 2, '480p': 1 };
+      const qualityDiff = (qualityOrder[b.quality] || 0) - (qualityOrder[a.quality] || 0);
+      if (qualityDiff !== 0) return qualityDiff;
+      return (b.seeders || 0) - (a.seeders || 0);
+    });
+
+    console.log(`[Jackett] Found ${results.length} torrents (${results.filter(r => r.cached).length} cached)`);
+    
+    return results.slice(0, 20); // Return top 20
+
+  } catch (error) {
+    console.error('[Jackett] Error:', error);
+    return [];
+  }
+}
+
+function extractQualityFromTitle(title) {
+  const lower = title.toLowerCase();
+  if (/2160p|4k|uhd/i.test(lower)) return '2160p';
+  if (/1080p/i.test(lower)) return '1080p';
+  if (/720p/i.test(lower)) return '720p';
+  if (/480p/i.test(lower)) return '480p';
+  return 'unknown';
+}
+
+function formatBytesHelper(bytes) {
+  if (bytes === 0) return '0 B';
+  const k = 1024;
+  const sizes = ['B', 'KB', 'MB', 'GB', 'TB'];
+  const i = Math.floor(Math.log(bytes) / Math.log(k));
+  return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
+}
+
 // Resolution tag we can pull from a release filename (e.g. "Fight.Club.1080p.BrRip.x264.mp4").
 // Returns the lowercased label ('1080p', '720p', …) or null when nothing matches —
 // in which case the candidate is simply omitted from the per-quality menu.
@@ -298,6 +457,32 @@ export async function GET(request) {
         console.log(`[RD] Backup manifest recovered ${validStreams.length} stream(s) for ${streamId}`);
       }
     }
+    
+    // ── Jackett fallback: Search 50+ indexers when Comet has nothing ─────
+    // Jackett-sourced torrents return with a flag `jackett: true` and
+    // `cached: false` initially. The frontend will show "Add to RD & wait"
+    // buttons for these. This dramatically improves coverage for titles
+    // Comet misses (older sitcoms, niche releases, recent drops).
+    if (validStreams.length === 0 && process.env.JACKETT_API_KEY) {
+      console.log(`[RD] Comet found nothing for ${streamId}, trying Jackett...`);
+      const jackettStreams = await fetchJackettStreams(
+        mediaType,
+        imdbId,
+        tmdbId,
+        season,
+        episode,
+      );
+      if (jackettStreams.length > 0) {
+        console.log(`[RD] Jackett recovered ${jackettStreams.length} torrent(s) for ${streamId}`);
+        // Return a special response for uncached Jackett torrents
+        return NextResponse.json({
+          success: false,
+          jackettResults: jackettStreams,
+          message: 'No cached streams found, but torrents are available',
+        });
+      }
+    }
+    
     if (validStreams.length === 0) {
       return NextResponse.json(
         { error: 'No streams found for this title' },

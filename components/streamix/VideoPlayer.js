@@ -5,6 +5,7 @@ import { STREAMING_SERVERS, getEmbedUrl } from '@/lib/streaming';
 import { resolveAllDebrid } from '@/lib/alldebrid-client';
 import HlsVideo from '@/components/streamix/HlsVideo';
 import HilltopAdsLoader from '@/components/streamix/HilltopAdsLoader';
+import { JackettResultsOverlay } from '@/components/streamix/JackettResults';
 import {
   Server, AlertCircle, RotateCw, Loader2,
   CheckCircle2, XCircle, Circle, Youtube, ChevronRight, Play, Shield, ShieldOff,
@@ -434,6 +435,30 @@ const VideoPlayer = ({
       .then(async (r) => {
         const data = await r.json().catch(() => ({}));
         if (cancelled) return;
+        
+        // Check if Jackett results are available (uncached torrents)
+        if (!data.success && data.jackettResults && Array.isArray(data.jackettResults)) {
+          console.log(`[Premium] Jackett found ${data.jackettResults.length} torrents`);
+          setPremium({ 
+            state: 'jackett', 
+            jackettResults: data.jackettResults,
+            error: null,
+            url: null, 
+            quality: null, 
+            title: null, 
+            alternates: [], 
+            altIndex: 0, 
+            qualities: [], 
+            sessionStartOffset: 0, 
+            sourceDuration: null, 
+            audioStreams: [], 
+            currentAudioIndex: null, 
+            currentSourceUrl: null 
+          });
+          updateStatus(serverIdx, STATUS.UNTESTED);
+          return;
+        }
+        
         if (!r.ok || !data.success || !data.streamUrl) {
           throw new Error(data.error || `Resolver returned ${r.status}`);
         }
@@ -1049,6 +1074,28 @@ const VideoPlayer = ({
                   <p className="text-xs text-neutral-500 mt-3">Switching to next server…</p>
                 </div>
               </div>
+            )}
+
+            {/* JACKETT results overlay — torrents found but not cached */}
+            {playerActive && !showTrailer && isPremiumActive && premium.state === 'jackett' && premium.jackettResults && (
+              <JackettResultsOverlay
+                results={premium.jackettResults}
+                mediaType={mediaType}
+                tmdbId={tmdbId}
+                imdbId={imdbId}
+                season={season}
+                episode={episode}
+                onAddTorrent={(torrent) => {
+                  // Handle torrent addition
+                  console.log('[Jackett] Adding torrent:', torrent.title);
+                  // TODO: Implement add & wait flow
+                }}
+                onClose={() => {
+                  // Fall back to next server
+                  const next = findNextCandidate(serverIdx);
+                  if (next != null && next !== serverIdx) setServerIdx(next);
+                }}
+              />
             )}
 
             {/* EMBED iframe */}
