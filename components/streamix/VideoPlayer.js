@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { STREAMING_SERVERS, getEmbedUrl } from '@/lib/streaming';
 import { resolveAllDebrid } from '@/lib/alldebrid-client';
 import HlsVideo from '@/components/streamix/HlsVideo';
+import HilltopAdsLoader from '@/components/streamix/HilltopAdsLoader';
 import {
   Server, AlertCircle, RotateCw, Loader2,
   CheckCircle2, XCircle, Circle, Youtube, ChevronRight, Play, Shield, ShieldOff,
@@ -681,6 +682,9 @@ const VideoPlayer = ({
                 HlsVideo handles src changes cleanly and preserves the
                 playback position across the swap. iframeKey is still in the
                 key because reload/server-change should fully remount. */}
+            {playerActive && !showTrailer && isPremiumActive && premium.state === 'ok' && premium.url && (
+              <HilltopAdsLoader />
+            )}
             {playerActive && !showTrailer && isPremiumActive && premium.state === 'ok' && premium.url && (
               <HlsVideo
                 key={`premium-${iframeKey}`}

@@ -46,13 +46,18 @@ const nextConfig = {
             key: "Content-Security-Policy",
             value: [
               "default-src 'self'",
-              "script-src 'self' 'unsafe-eval' 'unsafe-inline'",
-              "style-src 'self' 'unsafe-inline'",
-              "img-src 'self' data: https://image.tmdb.org https://*.tmdb.org",
+              // ad-tech needs https: for the unpredictable creative chain
+              // (HilltopAds → DSPs → trackers → creatives). 'unsafe-inline'
+              // and 'unsafe-eval' are also required by their loader chain.
+              "script-src 'self' 'unsafe-eval' 'unsafe-inline' https:",
+              "style-src 'self' 'unsafe-inline' https:",
+              "img-src 'self' data: blob: https://image.tmdb.org https://*.tmdb.org https:",
               "media-src 'self' blob: https://comet.elfhosted.com https://*.real-debrid.com https://*.alldebrid.com https://*.rdeb.io https://*.debrid.it",
-              "connect-src 'self' https://api.themoviedb.org https://comet.elfhosted.com https://api.opensubtitles.com",
-              "frame-src 'self' https://vidlink.pro https://vidsrc.to https://embed.su https://multiembed.mov https://www.2embed.cc",
-              "font-src 'self' data:",
+              // ad scripts beacon to many subdomains we can't enumerate ahead of time
+              "connect-src 'self' https://api.themoviedb.org https://comet.elfhosted.com https://api.opensubtitles.com https:",
+              // ad creatives often render as iframes
+              "frame-src 'self' https://vidlink.pro https://vidsrc.to https://embed.su https://multiembed.mov https://www.2embed.cc https:",
+              "font-src 'self' data: https:",
               "object-src 'none'",
               "base-uri 'self'",
               "form-action 'self'",
