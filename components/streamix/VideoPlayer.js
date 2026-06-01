@@ -709,6 +709,66 @@ const VideoPlayer = ({
   }, []);
 
   // ────────────────────────────────────────────────────────────
+  // Premium playback watchdog
+  // ────────────────────────────────────────────────────────────
+  // When the resolver returns OK but ffmpeg never produces a playable
+  // playlist (DOVI HEVC crashes, corrupt sources, etc.), hls.js can
+  // silently retry the playlist for several minutes — leaving the user
+  // staring at an "Unlocking Premium…" overlay that NEVER transitions.
+  //
+  // This watchdog kicks in once `premium.state === 'ok'` is set. It gives
+  // the player 35 seconds to actually start playing (the `onReady` callback
+  // on HlsVideo flips `playStartedRef.current = true` on `canplay`). If
+  // playback hasn't started by then, we forcibly trigger the same fatal-
+  // fallback path as a hard hls.js error: rotate to the next alternate,
+  // or — when alternates are exhausted — fall through to the next server
+  // (typically a Public Server).
+  const playStartedRef = useRef(false);
+  const handlePremiumFatal = useCallback((reason) => {
+    const alts = premium.alternates || [];
+    const nextAlt = premium.altIndex + 1;
+    if (nextAlt - 1 < alts.length) {
+      const a = alts[nextAlt - 1];
+      console.log(`[Premium] ${reason} — trying alternate #${nextAlt}: ${a.filename}`);
+      setToast({
+        kind: 'warn',
+        msg: `This version isn't playing — trying alternate #${nextAlt}…`,
+      });
+      setPremium((prev) => ({
+        ...prev,
+        url: a.streamUrl,
+        quality: a.quality || a.filename,
+        title: a.filename || '',
+        altIndex: nextAlt,
+        currentSourceUrl: a.directUrl || prev.currentSourceUrl,
+      }));
+      // Reset playback-watchdog for the new alternate
+      playStartedRef.current = false;
+      return;
+    }
+    console.warn(`[Premium] ${reason} — no more alternates, falling through to next server`);
+    updateStatus(serverIdx, STATUS.FAILED);
+    triedAutoSwitchRef.current.add(serverIdx);
+    setToast({ kind: 'error', msg: 'Premium couldn\'t play this title — switching to another server…' });
+    setTimeout(() => tryNextServer(), 1000);
+  }, [premium.alternates, premium.altIndex, serverIdx, tryNextServer]);
+
+  useEffect(() => {
+    // Only arm the watchdog once we have a real stream URL — not while
+    // the resolver is still loading. Re-armed on every URL change so it
+    // catches stalled alternates too.
+    if (!isPremiumActive || !playerActive || showTrailer) return;
+    if (premium.state !== 'ok' || !premium.url) return;
+
+    playStartedRef.current = false;
+    const watchdog = setTimeout(() => {
+      if (playStartedRef.current) return; // started playing OK
+      handlePremiumFatal('Playback did not start within 35s (stalled ffmpeg / unsupported codec)');
+    }, 35000);
+    return () => clearTimeout(watchdog);
+  }, [premium.state, premium.url, premium.altIndex, isPremiumActive, playerActive, showTrailer, handlePremiumFatal]);
+
+  // ────────────────────────────────────────────────────────────
   // Render
   // ────────────────────────────────────────────────────────────
   const isPremiumActive = activeServer.isPremium;
@@ -1023,38 +1083,11 @@ const VideoPlayer = ({
                 backdropPath={backdropPath}
                 nextEpisode={nextEpisode}
                 onPlayNext={onPlayNext}
-                onReady={() => updateStatus(serverIdx, STATUS.OK)}
-                onFatal={() => {
-                  // The HLS player gave up. Try alternates (each its own
-                  // pre-built HLS session) before falling back to a
-                  // different streaming server.
-                  const alts = premium.alternates || [];
-                  const nextAlt = premium.altIndex + 1;
-                  if (nextAlt - 1 < alts.length) {
-                    const a = alts[nextAlt - 1];
-                    console.log(`[Premium] Primary failed, trying alternate #${nextAlt}: ${a.filename}`);
-                    setToast({
-                      kind: 'warn',
-                      msg: `Primary stream failed, trying alternate #${nextAlt}…`,
-                    });
-                    setPremium((prev) => ({
-                      ...prev,
-                      url: a.streamUrl,
-                      quality: a.quality || a.filename,
-                      title: a.filename || '',
-                      altIndex: nextAlt,
-                      // Alternate rotation = different source file = different
-                      // RD URL. Refresh currentSourceUrl so post-rotation
-                      // audio switches re-seed against the new source.
-                      currentSourceUrl: a.directUrl || prev.currentSourceUrl,
-                    }));
-                    return;
-                  }
-                  updateStatus(serverIdx, STATUS.FAILED);
-                  triedAutoSwitchRef.current.add(serverIdx);
-                  setToast({ kind: 'error', msg: 'Premium stream playback failed — trying next server…' });
-                  setTimeout(() => tryNextServer(), 1000);
+                onReady={() => {
+                  playStartedRef.current = true;
+                  updateStatus(serverIdx, STATUS.OK);
                 }}
+                onFatal={() => handlePremiumFatal('hls.js fatal error')}
               />
             )}
 

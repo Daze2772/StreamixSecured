@@ -384,7 +384,16 @@ function rankStream(filename, sizeBytes, name = '') {
   // but still above UNKNOWN-quality (which is -100000) — so if DOVI is
   // the ONLY available release we'll still try it with the ffmpeg
   // defenses active.
-  if (/\b(do?vi|dolby[.\s_-]?vision|dv[.\s_-]?(?:hdr|p[58]|profile)|dvhe|dvh1)\b/i.test(n)) {
+  //
+  // Token coverage (case-insensitive):
+  //   - 'dovi', 'dvi'                    explicit DOVI tags
+  //   - 'dolby vision' / dolby.vision    full phrase
+  //   - 'dv'  (word-bounded)             "HDR DV", "DV.HDR", "BluRay.DV"
+  //                                      Safe: won't match "DVD" / "DV8" / "DV9"
+  //                                      because the chars after V are word chars
+  //   - 'dv5'/'dv7'/'dv8'/'dvp5'/'dvp7'/'dvp8'  profile-specific tags
+  //   - 'dvhe', 'dvh1'                   HEVC DOVI codec tags
+  if (/\b(do?vi|dolby[.\s_-]?vision|dv|dvp?[5-8]|dvhe|dvh1)\b/i.test(n)) {
     score -= 3000;
   }
 
