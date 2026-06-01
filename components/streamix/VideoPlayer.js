@@ -7,7 +7,7 @@ import HlsVideo from '@/components/streamix/HlsVideo';
 import { JackettResultsOverlay } from '@/components/streamix/JackettResults';
 import {
   Server, AlertCircle, RotateCw, Loader2,
-  CheckCircle2, XCircle, Circle, Youtube, ChevronRight, Play, Shield, ShieldOff,
+  CheckCircle2, XCircle, Circle, Youtube, ChevronRight, Play,
   Crown, Sparkles,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
@@ -712,6 +712,11 @@ const VideoPlayer = ({
   // Render
   // ────────────────────────────────────────────────────────────
   const isPremiumActive = activeServer.isPremium;
+  // Popup-blocker is always ON in the background — the user-facing toggle
+  // was removed because non-technical users found the "Protection: ON/OFF"
+  // chip confusing. `popupBlock` state remains in case we ever need it for
+  // diagnostics. `setPopupBlock` is intentionally unused.
+  // eslint-disable-next-line no-unused-vars
   const showPopupToggle = !activeServer.isDirect && !activeServer.isPremium;
   // Index of the first premium server in the catalogue — used as the
   // target for the "Switch to Premium" CTA inside the embed-ads advisory.
@@ -1239,39 +1244,14 @@ const VideoPlayer = ({
                   </span>
                 )}
 
-                {/* Popup-blocker badge (embeds only) */}
-                {showPopupToggle && (
-                  <span
-                    className={`inline-flex items-center gap-1 ml-2 text-[10px] uppercase tracking-wider ${
-                      popupBlock ? 'text-emerald-400' : 'text-yellow-400'
-                    }`}
-                    title={popupBlock
-                      ? 'Tab-hijack protection ON. Provider cannot redirect your tab or open further popups from popups. Some popup ads may still spawn but are heavily restricted.'
-                      : 'Tab-hijack protection OFF. Provider can fully redirect your tab and spawn unrestricted popups.'}
-                  >
-                    {popupBlock ? <Shield className="w-3 h-3" /> : <ShieldOff className="w-3 h-3" />}
-                    {popupBlock ? 'redirects blocked' : 'unprotected'}
-                  </span>
-                )}
+                {/* Popup-blocker UI removed — protection stays ON silently
+                    in the background (popupBlock state defaults true and is
+                    never toggled by the user). The badge + toggle button
+                    were confusing for non-technical users who'd see
+                    "Protection: OFF" labels and wonder what they did. */}
               </div>
 
               <div className="flex items-center gap-2">
-                {showPopupToggle && (
-                  <button
-                    onClick={() => { setPopupBlock((v) => !v); setIframeKey((k) => k + 1); }}
-                    title={popupBlock
-                      ? 'Tab-hijack protection is ON. Disable only if this provider refuses to play.'
-                      : 'Enable tab-hijack protection (blocks redirects, limits popups).'}
-                    className={`inline-flex items-center gap-1.5 px-3 py-2 rounded-md border text-sm transition ${
-                      popupBlock
-                        ? 'bg-emerald-500/10 hover:bg-emerald-500/20 border-emerald-500/30 text-emerald-300'
-                        : 'bg-yellow-500/10 hover:bg-yellow-500/20 border-yellow-500/30 text-yellow-300'
-                    }`}
-                  >
-                    {popupBlock ? <Shield className="w-4 h-4" /> : <ShieldOff className="w-4 h-4" />}
-                    <span className="hidden sm:inline">{popupBlock ? 'Protection: ON' : 'Protection: OFF'}</span>
-                  </button>
-                )}
                 <button
                   onClick={reload}
                   title="Reload player"

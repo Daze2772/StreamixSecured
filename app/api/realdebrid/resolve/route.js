@@ -93,8 +93,12 @@ async function fetchJackettStreams(mediaType, imdbId, tmdbId, season, episode) {
 
     // Build search query - we need title from TMDB
     let searchQuery = '';
-    
-    // Try to fetch title from TMDB
+    let releaseYear = '';
+
+    // Try to fetch title from TMDB. We pull the official title + the release
+    // year so we can disambiguate same-name shows/reboots (e.g. iCarly 2007
+    // vs iCarly 2021, TheBackrooms 2024 vs 2022). Adding the year to the
+    // Jackett search dramatically improves hit relevance for ambiguous titles.
     if (tmdbId) {
       try {
         const tmdbApiKey = process.env.NEXT_PUBLIC_TMDB_API_KEY;
@@ -104,6 +108,9 @@ async function fetchJackettStreams(mediaType, imdbId, tmdbId, season, episode) {
           if (tmdbRes.ok) {
             const tmdbData = await tmdbRes.json();
             searchQuery = tmdbData.title || tmdbData.name || '';
+            const rawDate = tmdbData.release_date || tmdbData.first_air_date || '';
+            const yearMatch = rawDate.match(/^(\d{4})/);
+            if (yearMatch) releaseYear = yearMatch[1];
           }
         }
       } catch (e) {
@@ -116,11 +123,16 @@ async function fetchJackettStreams(mediaType, imdbId, tmdbId, season, episode) {
       return [];
     }
 
-    // Add season/episode for TV shows
+    // Add season/episode for TV shows. For movies, append the release
+    // year — disambiguates remakes/reboots and dramatically improves
+    // relevance on common titles (e.g. "Iron Lung" 2024 vs trailers /
+    // demos / unrelated re-uploads).
     if (mediaType === 'tv' && season && episode) {
       const s = String(season).padStart(2, '0');
       const e = String(episode).padStart(2, '0');
       searchQuery += ` S${s}E${e}`;
+    } else if (mediaType !== 'tv' && releaseYear) {
+      searchQuery += ` ${releaseYear}`;
     }
 
     // Query Jackett
@@ -141,11 +153,13 @@ async function fetchJackettStreams(mediaType, imdbId, tmdbId, season, episode) {
     console.log(`[Jackett] GET ${safeUrl} (query="${searchQuery}")`);
     const startTime = Date.now();
 
-    // 25s is generous — Jackett's "all indexers" endpoint typically returns
-    // partial results within 10–15s even with 50+ indexers configured. Going
-    // higher just blocks the user-facing /api/realdebrid/resolve longer.
+    // 35s — Jackett's "all indexers" endpoint sometimes takes 20-30s when
+    // FlareSolverr is solving fresh Cloudflare challenges or when multiple
+    // indexers respond slowly. We saw real-world durations: 1ms (cached)
+    // → 9s → 19s. 35s gives healthy headroom without blocking the user
+    // for too long on a definitely-dead search.
     const jackettRes = await fetch(jackettUrl.toString(), {
-      signal: AbortSignal.timeout(25000),
+      signal: AbortSignal.timeout(35000),
       headers: { 'User-Agent': 'Streamix/1.0' },
     });
     
@@ -232,11 +246,12 @@ async function fetchJackettStreams(mediaType, imdbId, tmdbId, season, episode) {
     const isTimeout = error?.name === 'TimeoutError' || /aborted|timeout/i.test(error?.message || '');
     if (isTimeout) {
       console.error(
-        `[Jackett] TIMEOUT after ${elapsed}ms — common causes: ` +
-        `1) JACKETT_URL points to wrong host/port (current: ${process.env.JACKETT_URL || 'http://localhost:9117'}) ` +
-        `2) Jackett process not running (check 'systemctl status jackett') ` +
-        `3) Firewall blocking the port. ` +
-        `Try: curl -s "${(process.env.JACKETT_URL || 'http://127.0.0.1:9117').replace(/\/$/, '')}/api/v2.0/server/config?apikey=<key>"`
+        `[Jackett] TIMEOUT after ${elapsed}ms (limit 35s) — Jackett took too long to respond. ` +
+        `Likely causes: (1) FlareSolverr stuck on a Cloudflare challenge, ` +
+        `(2) one or more indexers are slow/hanging. ` +
+        `Diagnose with: 'sudo docker logs --tail=50 flaresolverr' and ` +
+        `'curl -s --max-time 40 "${(process.env.JACKETT_URL || 'http://127.0.0.1:9117').replace(/\/$/, '')}/api/v2.0/indexers/all/results?apikey=<key>&Query=test"' ` +
+        `— if that curl also hangs, restart Jackett: 'sudo systemctl restart jackett'`
       );
     } else {
       console.error(`[Jackett] Error after ${elapsed}ms:`, error.message);
