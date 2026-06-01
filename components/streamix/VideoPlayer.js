@@ -709,7 +709,14 @@ const VideoPlayer = ({
   }, []);
 
   // ────────────────────────────────────────────────────────────
-  // Premium playback watchdog
+  // Render
+  // ────────────────────────────────────────────────────────────
+  const isPremiumActive = activeServer.isPremium;
+
+  // ────────────────────────────────────────────────────────────
+  // Premium playback watchdog (must be declared AFTER isPremiumActive
+  // because it's used in this hook's dep array — moving the declaration
+  // up would cause a TDZ ReferenceError on first render).
   // ────────────────────────────────────────────────────────────
   // When the resolver returns OK but ffmpeg never produces a playable
   // playlist (DOVI HEVC crashes, corrupt sources, etc.), hls.js can
@@ -742,7 +749,6 @@ const VideoPlayer = ({
         altIndex: nextAlt,
         currentSourceUrl: a.directUrl || prev.currentSourceUrl,
       }));
-      // Reset playback-watchdog for the new alternate
       playStartedRef.current = false;
       return;
     }
@@ -754,24 +760,17 @@ const VideoPlayer = ({
   }, [premium.alternates, premium.altIndex, serverIdx, tryNextServer]);
 
   useEffect(() => {
-    // Only arm the watchdog once we have a real stream URL — not while
-    // the resolver is still loading. Re-armed on every URL change so it
-    // catches stalled alternates too.
     if (!isPremiumActive || !playerActive || showTrailer) return;
     if (premium.state !== 'ok' || !premium.url) return;
-
     playStartedRef.current = false;
     const watchdog = setTimeout(() => {
-      if (playStartedRef.current) return; // started playing OK
+      if (playStartedRef.current) return;
       handlePremiumFatal('Playback did not start within 35s (stalled ffmpeg / unsupported codec)');
     }, 35000);
     return () => clearTimeout(watchdog);
   }, [premium.state, premium.url, premium.altIndex, isPremiumActive, playerActive, showTrailer, handlePremiumFatal]);
 
-  // ────────────────────────────────────────────────────────────
-  // Render
-  // ────────────────────────────────────────────────────────────
-  const isPremiumActive = activeServer.isPremium;
+
   // Popup-blocker is always ON in the background — the user-facing toggle
   // was removed because non-technical users found the "Protection: ON/OFF"
   // chip confusing. `popupBlock` state remains in case we ever need it for
