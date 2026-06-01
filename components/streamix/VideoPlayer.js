@@ -4,14 +4,23 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { STREAMING_SERVERS, getEmbedUrl } from '@/lib/streaming';
 import { resolveAllDebrid } from '@/lib/alldebrid-client';
 import HlsVideo from '@/components/streamix/HlsVideo';
-import HilltopAdsLoader from '@/components/streamix/HilltopAdsLoader';
 import { JackettResultsOverlay } from '@/components/streamix/JackettResults';
 import {
   Server, AlertCircle, RotateCw, Loader2,
   CheckCircle2, XCircle, Circle, Youtube, ChevronRight, Play, Shield, ShieldOff,
-  Crown, Sparkles, X,
+  Crown, Sparkles,
 } from 'lucide-react';
 import { Button } from '@/components/ui/button';
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from '@/components/ui/alert-dialog';
 
 /**
  * VideoPlayer — reliability-first multi-server player for movies & TV.
@@ -715,8 +724,14 @@ const VideoPlayer = ({
   // server is a third-party iframe provider (not premium, not the demo
   // direct-MP4 server), AND there's at least one premium server we can
   // route the user to, AND they haven't dismissed it this session.
+  // Embed-advisory visibility:
+  //   - user has NOT yet dismissed this session
+  //   - they're actively trying to watch on a non-premium / non-direct server
+  //   - a premium server exists (so the "switch to premium" option is real)
+  //   - and they've clicked Play (playerActive) — we don't ambush page browse
   const showEmbedAdvisory =
     embedAdvisoryOpen
+    && playerActive
     && !activeServer.isPremium
     && !activeServer.isDirect
     && firstPremiumIdx >= 0
@@ -818,9 +833,6 @@ const VideoPlayer = ({
                 HlsVideo handles src changes cleanly and preserves the
                 playback position across the swap. iframeKey is still in the
                 key because reload/server-change should fully remount. */}
-            {playerActive && !showTrailer && isPremiumActive && premium.state === 'ok' && premium.url && (
-              <HilltopAdsLoader />
-            )}
 
             {/* Resume chip (Q2 fix) — visible only when Premium is playing
                 AND we had a saved Continue Watching position. One tap
@@ -1098,8 +1110,13 @@ const VideoPlayer = ({
               />
             )}
 
-            {/* EMBED iframe */}
-            {playerActive && !showTrailer && !activeServer.isDirect && !isPremiumActive && embedUrl && (
+            {/* EMBED iframe — gated behind embed advisory.
+                If `showEmbedAdvisory` is true the AlertDialog below is
+                visible and the user must Accept (or switch to Premium)
+                before the iframe is allowed to mount. This prevents ads
+                and third-party scripts from loading until the user has
+                explicitly consented. */}
+            {playerActive && !showTrailer && !activeServer.isDirect && !isPremiumActive && embedUrl && !showEmbedAdvisory && (
               <iframe
                 key={`${activeServer.id}-${season}-${episode}-${iframeKey}-${popupBlock ? 'pb' : 'np'}`}
                 src={popupBlock ? `/embed?url=${encodeURIComponent(embedUrl)}` : embedUrl}
@@ -1153,51 +1170,53 @@ const VideoPlayer = ({
             </div>
           )}
 
-          {/* Embed-server advisory — only shown when on a 3rd-party iframe
-              provider. Reminds the user that ads come from the provider
-              (we don't control them) and offers a one-tap switch to the
-              free Premium tier. Dismissible per-session. */}
-          {showEmbedAdvisory && (
-            <div className="mt-3 mx-2 md:mx-0 rounded-lg border border-amber-500/30 bg-gradient-to-br from-amber-950/50 to-yellow-950/30 px-4 py-3 flex items-start gap-3">
-              <div className="mt-0.5 h-8 w-8 rounded-full bg-amber-500/20 grid place-items-center flex-none">
-                <Crown className="w-4 h-4 text-amber-300" />
-              </div>
-              <div className="flex-1 min-w-0">
-                <p className="text-sm font-semibold text-amber-100">
-                  Heads up — <span className="text-amber-300">{activeServer.name}</span> is a third-party server
-                </p>
-                <p className="text-xs text-neutral-300 mt-1 leading-relaxed">
-                  Any ads or pop-ups you see come from the provider — we don't control them. For an almost ad-free experience, try our <b className="text-amber-200">Premium</b> server — it's <b className="text-amber-200">free</b>.
-                </p>
-                <div className="mt-2.5 flex flex-wrap items-center gap-2">
-                  <Button
-                    size="sm"
-                    onClick={() => {
-                      selectServer(firstPremiumIdx);
-                      dismissEmbedAdvisory();
-                    }}
-                    className="bg-gradient-to-br from-amber-500 to-yellow-600 hover:from-amber-400 hover:to-yellow-500 text-white font-semibold h-8 px-3 shadow shadow-amber-500/20"
-                  >
-                    <Crown className="w-3.5 h-3.5 mr-1.5" />
-                    Switch to Premium For Free
-                  </Button>
-                  <button
-                    onClick={dismissEmbedAdvisory}
-                    className="text-xs text-neutral-400 hover:text-neutral-200 px-2 py-1"
-                  >
-                    Not now
-                  </button>
+          {/* Embed-server BLOCKING modal — appears the first time a user
+              attempts to watch on a third-party iframe provider this
+              session. The iframe (and any ads/scripts it would load) is
+              gated behind this modal until the user explicitly accepts.
+              "Switch to Premium" routes them to our free Premium tier
+              instead. Dismissal is persisted in sessionStorage so we
+              don't nag on every server-switch within the same tab. */}
+          <AlertDialog open={showEmbedAdvisory}>
+            <AlertDialogContent className="bg-neutral-950 border border-amber-500/30 max-w-md">
+              <AlertDialogHeader>
+                <div className="mx-auto mb-2 h-12 w-12 rounded-full bg-amber-500/20 grid place-items-center">
+                  <Crown className="h-6 w-6 text-amber-300" />
                 </div>
-              </div>
-              <button
-                onClick={dismissEmbedAdvisory}
-                aria-label="Dismiss advisory"
-                className="flex-none text-neutral-500 hover:text-neutral-200 transition"
-              >
-                <X className="w-4 h-4" />
-              </button>
-            </div>
-          )}
+                <AlertDialogTitle className="text-center text-amber-100">
+                  You're about to use a third-party server
+                </AlertDialogTitle>
+                <AlertDialogDescription className="text-center text-neutral-300 leading-relaxed">
+                  <span className="text-amber-300 font-semibold">{activeServer.name}</span> is
+                  operated by an external provider. Any ads, pop-ups, or
+                  redirects you encounter come from <b>them</b> — Streamix
+                  doesn't control or profit from them.
+                  <br /><br />
+                  For a near-ad-free experience, switch to our{' '}
+                  <b className="text-amber-200">Premium</b> server — it's{' '}
+                  <b className="text-amber-200">100% free</b> and powered by Real-Debrid.
+                </AlertDialogDescription>
+              </AlertDialogHeader>
+              <AlertDialogFooter className="flex-col sm:flex-col gap-2 sm:gap-2 sm:space-x-0">
+                <AlertDialogAction
+                  onClick={() => {
+                    if (firstPremiumIdx >= 0) selectServer(firstPremiumIdx);
+                    dismissEmbedAdvisory();
+                  }}
+                  className="w-full bg-gradient-to-br from-amber-500 to-yellow-600 hover:from-amber-400 hover:to-yellow-500 text-white font-semibold shadow shadow-amber-500/20"
+                >
+                  <Crown className="w-4 h-4 mr-2" />
+                  Switch to Premium (Free)
+                </AlertDialogAction>
+                <AlertDialogCancel
+                  onClick={dismissEmbedAdvisory}
+                  className="w-full mt-0 bg-neutral-900 border-neutral-700 text-neutral-200 hover:bg-neutral-800 hover:text-white"
+                >
+                  I understand — continue with {activeServer.name}
+                </AlertDialogCancel>
+              </AlertDialogFooter>
+            </AlertDialogContent>
+          </AlertDialog>
 
           {/* Action bar */}
           {!showTrailer && (

@@ -124,10 +124,17 @@ async function fetchJackettStreams(mediaType, imdbId, tmdbId, season, episode) {
     }
 
     // Query Jackett
+    // NOTE: We deliberately DO NOT pass `imdbid` here. Most of our working
+    // public indexers (1337x, torrentdownloads) don't have IMDb→title
+    // metadata; when Jackett receives an imdbid it tries to resolve via
+    // those indexers' IMDb-search modes, which silently return 0 results
+    // for indexers that don't support it. Title-only search returns the
+    // full result set across every indexer. Verified empirically:
+    //   curl ...?Query=iCarly+S01E01&imdbid=0972534  → 0 results
+    //   curl ...?Query=iCarly+S01E01                 → 32 results
     const jackettUrl = new URL(`${JACKETT_URL}/api/v2.0/indexers/all/results`);
     jackettUrl.searchParams.set('apikey', JACKETT_API_KEY);
     if (searchQuery) jackettUrl.searchParams.set('Query', searchQuery);
-    if (imdbId) jackettUrl.searchParams.set('imdbid', imdbId.replace('tt', ''));
 
     // Don't leak api key into logs — strip apikey query param when logging URL
     const safeUrl = jackettUrl.toString().replace(/(apikey=)[^&]+/i, '$1[REDACTED]');

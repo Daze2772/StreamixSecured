@@ -55,13 +55,12 @@ export async function GET(request) {
     }
 
     // Query Jackett
+    // NOTE: imdbid intentionally omitted — see /app/app/api/realdebrid/resolve/route.js
+    // for rationale. Most public indexers don't honor it and return 0 results
+    // when given an imdbid filter, even when the title query matches plenty.
     const jackettUrl = new URL(`${JACKETT_URL}/api/v2.0/indexers/all/results`);
     jackettUrl.searchParams.set('apikey', JACKETT_API_KEY);
     jackettUrl.searchParams.set('Query', searchQuery);
-    
-    if (imdbId) {
-      jackettUrl.searchParams.set('imdbid', imdbId.replace('tt', ''));
-    }
 
     console.log('[Jackett] Searching:', searchQuery, imdbId || '');
     const startTime = Date.now();
