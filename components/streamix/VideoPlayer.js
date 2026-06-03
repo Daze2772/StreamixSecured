@@ -116,14 +116,21 @@ const VideoPlayer = ({
   const [showTrailer, setShowTrailer] = useState(false);
   const [toast, setToast] = useState(null);
   const [playerActive, setPlayerActive] = useState(false);
-  // Popup-blocker sandbox is now ALWAYS ON for public/embed servers.
-  // The user-facing toggle was removed (non-technical users found
-  // "Protection: ON/OFF" confusing). We deliberately ignore any stored
-  // `streamix:popupBlocker` localStorage value from older builds because
-  // some users had toggled it off and would otherwise stay unprotected
-  // forever. If we ever need diagnostics, just set this to false here.
-  const popupBlock = true;
-  // Wipe any legacy stored value on first load (one-time cleanup).
+  // Popup-blocker sandbox was historically applied to public-server iframes
+  // via our /embed proxy ("double-iframe sandbox" trick). Embed providers
+  // have since adapted and now detect the sandboxed context (sandbox flags
+  // propagate down through nested browsing contexts even when the inner
+  // iframe element has no sandbox attr) — they refuse to play and ask
+  // the user to "disable sandbox". Since we already gate the iframe behind
+  // a blocking acceptance modal (the AlertDialog that warns about ads),
+  // the user is informed, and we let public-server iframes load native.
+  //
+  // popupBlock=false means: no /embed proxy, no sandbox attr, providers
+  // get a normal iframe and play correctly. Popup ads / tab redirects
+  // become possible — but that's what the warning modal disclosed.
+  const popupBlock = false;
+  // One-time cleanup of any legacy localStorage value from when this
+  // had a user-facing toggle.
   useEffect(() => {
     try { window.localStorage.removeItem('streamix:popupBlocker'); } catch (_) {}
   }, []);
