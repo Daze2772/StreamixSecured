@@ -1082,9 +1082,13 @@ const VideoPlayer = ({
                 backdropPath={backdropPath}
                 nextEpisode={nextEpisode}
                 onPlayNext={onPlayNext}
-                onReady={() => {
+                onReady={() => updateStatus(serverIdx, STATUS.OK)}
+                onPlaybackStarted={() => {
+                  // This fires only on real playback progress (currentTime > 1s).
+                  // canplay/MANIFEST_PARSED were too lenient — they fire even
+                  // when ffmpeg has produced a single corrupt frame and the
+                  // decoder is then stuck. See HlsVideo.js for details.
                   playStartedRef.current = true;
-                  updateStatus(serverIdx, STATUS.OK);
                 }}
                 onFatal={() => handlePremiumFatal('hls.js fatal error')}
               />
@@ -1135,9 +1139,44 @@ const VideoPlayer = ({
                 season={season}
                 episode={episode}
                 onAddTorrent={(torrent) => {
-                  // Handle torrent addition
+                  // The overlay manages its own polling — we just log
+                  // the user's choice for observability.
                   console.log('[Jackett] Adding torrent:', torrent.title);
-                  // TODO: Implement add & wait flow
+                }}
+                onPreparedReady={async (torrentId) => {
+                  // Fired when an uncached torrent finished downloading on
+                  // RD and the user clicked "Play now". We swap the Premium
+                  // state into a fresh HLS session against the now-cached
+                  // file (Comet wouldn't see this private add, so we can't
+                  // just reload).
+                  try {
+                    setPremium((p) => ({ ...p, state: 'loading', error: null }));
+                    setToast({ kind: 'info', msg: 'Starting your video…' });
+                    const res = await fetch(`/api/realdebrid/play-from-torrent?torrentId=${encodeURIComponent(torrentId)}`);
+                    const data = await res.json();
+                    if (!res.ok || !data.success || !data.streamUrl) {
+                      throw new Error(data.error || 'Could not start playback');
+                    }
+                    setPremium({
+                      state: 'ok',
+                      url: data.streamUrl,
+                      directUrl: data.directUrl,
+                      currentSourceUrl: data.directUrl,
+                      sourceDuration: data.sourceDuration || null,
+                      audioStreams: data.audioStreams || [],
+                      selectedAudioIndex: data.selectedAudioIndex ?? 0,
+                      title: data.filename || '',
+                      quality: data.filename || '',
+                      alternates: [],
+                      altIndex: 0,
+                      jackettResults: null,
+                      error: null,
+                    });
+                  } catch (e) {
+                    console.error('[Jackett→Play] failed:', e);
+                    setPremium((p) => ({ ...p, state: 'error', error: e.message || 'Could not start playback' }));
+                    setToast({ kind: 'error', msg: e.message || 'Could not start playback' });
+                  }
                 }}
                 onClose={() => {
                   // Fall back to next server

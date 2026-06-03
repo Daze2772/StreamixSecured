@@ -415,7 +415,13 @@ function rankStream(filename, sizeBytes, name = '') {
   }
 
   // ─── Junk / non-English flags ────────────────────────────────
-  if (/\b(sample|trailer|preview)\b/.test(n)) score -= 5000;
+  // Trailers / samples — heavy penalty. Variants observed in the wild:
+  //   - "Sample" / "Trailer" / "Preview" / "Teaser" / "Promo"
+  //   - "TLR" / "TLR-1" / "TLR-2"  (industry abbreviation, e.g.
+  //                                  MICHAEL-TLR-1_1080P-HEVC-...)
+  //   - "OST" / "DCP" / "EXP"      (cinema package fragments)
+  //   - any file < 250MB for a feature film is almost certainly a clip
+  if (/\b(sample|trailer|teaser|preview|promo|tlr(-?\d+)?)\b/i.test(n)) score -= 5000;
   if (/\b(hindi|spanish|french|german|italian|portuguese|russian|chinese|korean|japanese|arabic|turkish|polish|latino|castellano|dub(bed)?|multi)\b/.test(n)) score -= 80;
   if (/\bvostfr\b/.test(n)) score -= 80;
   if (/\b(ita|esp|fra|ger|rus|pol|tur)\b/.test(n)) score -= 50;

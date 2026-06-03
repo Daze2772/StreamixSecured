@@ -35,7 +35,7 @@ const RD_STATUS_LABELS = {
   dead: { label: 'No active peers — try another version', live: false, error: true },
 };
 
-export function JackettResultsOverlay({ results, onAddTorrent, onClose }) {
+export function JackettResultsOverlay({ results, onAddTorrent, onPreparedReady, onClose }) {
   const [adding, setAdding] = useState(null); // torrent infoHash being added
   const [progress, setProgress] = useState(null);
   const pollRef = useRef(null);
@@ -222,13 +222,23 @@ export function JackettResultsOverlay({ results, onAddTorrent, onClose }) {
           {isDone && (
             <div className="mt-4 text-center">
               <p className="text-sm text-green-300 mb-4">
-                Your video is ready. Reload the page to start watching.
+                Your video is ready to play.
               </p>
               <Button
-                onClick={() => window.location.reload()}
+                onClick={() => {
+                  // Hand the prepared torrent off to the parent VideoPlayer
+                  // which will hit /api/realdebrid/play-from-torrent and
+                  // start a fresh HLS session against the now-cached file.
+                  if (onPreparedReady && progress.torrentId) {
+                    onPreparedReady(progress.torrentId);
+                  } else {
+                    // Fallback only if the integration wiring is missing
+                    window.location.reload();
+                  }
+                }}
                 className="w-full bg-gradient-to-r from-green-600 to-green-700 hover:from-green-500 hover:to-green-600 text-white"
               >
-                Reload &amp; play
+                Play now
               </Button>
             </div>
           )}
@@ -238,14 +248,18 @@ export function JackettResultsOverlay({ results, onAddTorrent, onClose }) {
   }
 
   // ─── Result list view ──────────────────────────────────────
-  // Defensive filtering — drop dead torrents (0 seeders) since RD can't
-  // pull them and the user would just stare at 0% forever.
-  const usable = (results || []).filter(r => (r.cached || (r.seeders || 0) > 0));
-  const instant = usable.filter(r => r.cached);
-  const prepare = usable
+  // We keep ALL torrents visible (including 0-seed) so users see options
+  // for niche/older titles where everything is barely-seeded. Dead-seed
+  // releases just get the "May be unavailable" peer-health label so the
+  // user can make an informed pick. The actual download fallback (60s
+  // stall detector in the progress view + ranker bottom-sort) handles
+  // the failure gracefully if they pick one.
+  const all = results || [];
+  const instant = all.filter(r => r.cached);
+  const prepare = all
     .filter(r => !r.cached)
     .sort((a, b) => (b.seeders || 0) - (a.seeders || 0));
-  const totalShown = instant.length + Math.min(prepare.length, 10);
+  const totalShown = instant.length + Math.min(prepare.length, 15);
 
   return (
     <div className="absolute inset-0 flex items-center justify-center bg-black/90 backdrop-blur px-4 py-6 overflow-y-auto">
@@ -309,10 +323,10 @@ export function JackettResultsOverlay({ results, onAddTorrent, onClose }) {
           <div className="px-6 py-4">
             <h3 className="text-sm font-semibold text-amber-400 mb-3 flex items-center gap-2">
               <Clock className="w-4 h-4" />
-              Available with a short prep ({Math.min(prepare.length, 10)})
+              Available with a short prep ({Math.min(prepare.length, 15)})
             </h3>
             <div className="space-y-2 max-h-80 overflow-y-auto pr-1">
-              {prepare.slice(0, 10).map((t) => (
+              {prepare.slice(0, 15).map((t) => (
                 <VersionItem
                   key={t.infoHash}
                   torrent={t}

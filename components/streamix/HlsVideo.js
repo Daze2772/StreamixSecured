@@ -86,6 +86,13 @@ export default function HlsVideo({
   className = '',
   onReady,
   onFatal,
+  // Fires ONCE when the video has actually advanced past 1s of playback
+  // (timeupdate event with currentTime > 1.0). Distinct from `onReady`
+  // which fires on canplay/MANIFEST_PARSED — those signal "data is here"
+  // but not that the decoder actually produced moving frames. Used by
+  // VideoPlayer's playback-watchdog to differentiate "ffmpeg session
+  // started but frozen" from "actually playing".
+  onPlaybackStarted = null,
   autoPlay = true,
   qualityLabel = 'Source · 1080p',
   // ── Multi-quality picker (Phase B) ────────────────────────────
@@ -169,10 +176,20 @@ export default function HlsVideo({
   // ── Latest-callback refs (so the hls effect doesn't re-run on parent re-render)
   const onReadyRef = useRef(onReady);
   const onFatalRef = useRef(onFatal);
+  const onPlaybackStartedRef = useRef(onPlaybackStarted);
   const onQualityChangeRef = useRef(onQualityChange);
   useEffect(() => { onReadyRef.current = onReady; }, [onReady]);
   useEffect(() => { onFatalRef.current = onFatal; }, [onFatal]);
+  useEffect(() => { onPlaybackStartedRef.current = onPlaybackStarted; }, [onPlaybackStarted]);
   useEffect(() => { onQualityChangeRef.current = onQualityChange; }, [onQualityChange]);
+
+  // True once we've fired onPlaybackStarted for the current src.
+  // Reset on src change via the effect cleanup so a quality swap or
+  // alternate rotation can re-trigger it.
+  const playbackStartedFiredRef = useRef(false);
+  useEffect(() => {
+    playbackStartedFiredRef.current = false;
+  }, [src]);
 
   // ── Quality swap state ───────────────────────────────────────
   // pendingSeekRef:  pre-swap currentTime captured in the hls-effect cleanup
@@ -696,7 +713,19 @@ export default function HlsVideo({
 
     const onPlay = () => { setIsPlaying(true); showControls(); };
     const onPause = () => { setIsPlaying(false); setControlsVisible(true); };
-    const onTimeUpdate = () => setCurrentTime(v.currentTime || 0);
+    const onTimeUpdate = () => {
+      const t = v.currentTime || 0;
+      setCurrentTime(t);
+      // Fire the playback-started signal once when we've genuinely
+      // advanced past 1 second. This is stricter than `canplay` /
+      // MANIFEST_PARSED (both of which can fire on a frozen / corrupt
+      // first-frame) and is what VideoPlayer's watchdog uses to confirm
+      // playback isn't actually stalled at 0:00.
+      if (!playbackStartedFiredRef.current && t > 1.0) {
+        playbackStartedFiredRef.current = true;
+        onPlaybackStartedRef.current?.();
+      }
+    };
     const onDurationChange = () => setDuration(v.duration || 0);
     // loadedmetadata = new source is fully parsed, duration is known, and
     // we can safely seek. This is also where we close the "Switching to X…"
