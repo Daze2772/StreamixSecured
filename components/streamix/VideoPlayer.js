@@ -97,7 +97,6 @@ const VideoPlayer = ({
     () => `streamix:server:${mediaType}:${tmdbId}`,
     [mediaType, tmdbId],
   );
-  const blockerKey = 'streamix:popupBlocker';
   // Session-persisted dismissal of the "public server has external ads"
   // advisory. We DELIBERATELY use sessionStorage (not localStorage) so the
   // notice reappears on a fresh visit — first-time users on each session
@@ -111,19 +110,23 @@ const VideoPlayer = ({
     return Number.isFinite(v) && v >= 0 && v < STREAMING_SERVERS.length ? v : 0;
   })();
 
-  const initialBlock = (() => {
-    if (typeof window === 'undefined') return true;
-    const v = window.localStorage.getItem(blockerKey);
-    return v === null ? true : v === '1';
-  })();
-
   const [serverIdx, setServerIdx] = useState(initialIdx);
   const [statuses, setStatuses] = useState(() => STREAMING_SERVERS.map(() => STATUS.UNTESTED));
   const [iframeKey, setIframeKey] = useState(0);
   const [showTrailer, setShowTrailer] = useState(false);
   const [toast, setToast] = useState(null);
   const [playerActive, setPlayerActive] = useState(false);
-  const [popupBlock, setPopupBlock] = useState(initialBlock);
+  // Popup-blocker sandbox is now ALWAYS ON for public/embed servers.
+  // The user-facing toggle was removed (non-technical users found
+  // "Protection: ON/OFF" confusing). We deliberately ignore any stored
+  // `streamix:popupBlocker` localStorage value from older builds because
+  // some users had toggled it off and would otherwise stay unprotected
+  // forever. If we ever need diagnostics, just set this to false here.
+  const popupBlock = true;
+  // Wipe any legacy stored value on first load (one-time cleanup).
+  useEffect(() => {
+    try { window.localStorage.removeItem('streamix:popupBlocker'); } catch (_) {}
+  }, []);
   // Whether the embed-ads advisory should appear when an embed server is
   // active. Defaults to true; flipped to false (for the rest of the tab
   // session) when the user clicks Dismiss on the advisory card. Reads
@@ -771,12 +774,6 @@ const VideoPlayer = ({
   }, [premium.state, premium.url, premium.altIndex, isPremiumActive, playerActive, showTrailer, handlePremiumFatal]);
 
 
-  // Popup-blocker is always ON in the background — the user-facing toggle
-  // was removed because non-technical users found the "Protection: ON/OFF"
-  // chip confusing. `popupBlock` state remains in case we ever need it for
-  // diagnostics. `setPopupBlock` is intentionally unused.
-  // eslint-disable-next-line no-unused-vars
-  const showPopupToggle = !activeServer.isDirect && !activeServer.isPremium;
   // Index of the first premium server in the catalogue — used as the
   // target for the "Switch to Premium" CTA inside the embed-ads advisory.
   // If no premium server is configured the advisory CTA is hidden.
